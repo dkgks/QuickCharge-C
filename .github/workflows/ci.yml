@@ -1,0 +1,66 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install arm64 cross-compiler and QEMU
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            gcc-aarch64-linux-gnu qemu-user-static zip
+
+      - name: Lint shell scripts and WebUI JS
+        run: |
+          for f in customize.sh post-fs-data.sh service.sh action.sh uninstall.sh lib/qc.sh; do
+            sh -n "$f"
+          done
+          node -e '
+            const fs = require("fs"), vm = require("vm");
+            const html = fs.readFileSync("webroot/index.html", "utf8");
+            const m = html.match(/<script>([\s\S]*?)<\/script>/);
+            if (!m) throw new Error("Missing <script>");
+            new vm.Script(m[1], { filename: "webroot/index.html" });
+          '
+
+      - name: Run unit tests
+        run: |
+          for t in chg-unit cool-unit mount-unit zone-rank; do
+            echo "=== $t ==="
+            sh "tests/$t.sh"
+          done
+          echo "=== state-unit ==="
+          sudo sh tests/state-unit.sh
+
+      - name: Build arm64 qcmon and run c-test
+        run: |
+          sh build-qcmon.sh arm64 /tmp/qcmon-arm64
+          /tmp/qcmon-arm64 -v || qemu-aarch64-static /tmp/qcmon-arm64 -v
+          sudo sh tests/c-test.sh "qemu-aarch64-static /tmp/qcmon-arm64"
+          mkdir -p bin
+          cp -f /tmp/qcmon-arm64 bin/qcmon
+          chmod 755 bin/qcmon
+
+      - name: Package flashable C module zip
+        run: |
+          VER=$(sed -n 's/^version=//p' module.prop | head -n 1)
+          ZIP="QuickCharge-v${VER}.zip"
+          zip -r9 "$ZIP" META-INF bin lib webroot customize.sh post-fs-data.sh service.sh action.sh uninstall.sh module.prop LICENSE
+          echo "ZIP_NAME=$ZIP" >> "$GITHUB_ENV"
+
+      - name: Upload module artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: QuickCharge-C-arm64-module
+          path: ${{ env.ZIP_NAME }}
+          if-no-files-found: error

@@ -105,7 +105,7 @@ sd_do_status() {
         printf '阶梯解锁  关闭（系统按温度分档；unlock on 可解除）\n'
     fi
     printf '温度哨兵  %s %s℃  [%s]\n' "$sz" "${real:--}" "${src:-未读到}"
-    [ "$_sd_screen_ticks" -gt 0 ] || sd_screen_tick
+    [ "$_sd_screen_ticks" -gt 0 ] || { sd_screen_tick; sd_screen_tick; }
     case "$(sd_scr_state)" in
         kernel) printf '亮屏快充  已接管（内核 ignore_screen_state）\n' ;;
         fcc)    if [ "$_sd_screen_on" = 0 ]; then
@@ -207,7 +207,7 @@ sd_do_json() {
         "$c" "$nc" "$(sd_state_get log_level 0)"
     printf '"sentinel":"%s","real":%s,"real_src":"%s","real_age":%s,"real_why":"%s","emul_ok":%s,' \
         "$sname" "$rj" "$src" "$rage" "${_sd_rr_why:-}" "${_sd_rr_emul:--1}"
-    [ "$_sd_screen_ticks" -gt 0 ] || sd_screen_tick
+    [ "$_sd_screen_ticks" -gt 0 ] || { sd_screen_tick; sd_screen_tick; }
     _sbase=0
     [ -f "$SD_FCC_NORM" ] && _sbase=$(tr -d '\r\n' <"$SD_FCC_NORM" 2>/dev/null)
     case "$_sbase" in ''|*[!0-9]*) _sbase=0 ;; esac
@@ -567,6 +567,9 @@ case "$1" in
         sd_daemon_stop
         sd_spoof_clear
         sd_shell_emul 0
+        sd_scr_release
+        sd_unlock_restore
+        sd_hz_restore
         sd_umount_overrides purge
         printf '0\n' 2>/dev/null >"$SD_DATA/boot.count"
         rm -f "$SD_STATE"
@@ -595,12 +598,12 @@ esac
 
 _rc=$?
 case "$_CMD" in
-    temp|shell|core|noncore|base|unlock|level|hz|hzguard)
+    temp|shell|core|noncore|base|batt|unlock|level|hz|hzguard)
         sd_ensure_daemon >/dev/null 2>&1
         sd_daemon_kick ;;
 esac
 case "$_CMD" in
-    temp|shell|core|noncore|base|unlock|level|hz|hzguard|\
+    temp|shell|core|noncore|base|batt|unlock|level|hz|hzguard|overrides|\
     mount|umount|rebuild|reboot-safe|reset)
         [ "$_rc" = "0" ] && sd_sync_desc ;;
 esac

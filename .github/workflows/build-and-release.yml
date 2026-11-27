@@ -1,0 +1,88 @@
+name: Build arm64 bin and Release
+
+on:
+  push:
+    tags:
+      - '*-c'
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      commit_bin:
+        description: 'Commit rebuilt arm64 bin/qcmon back to main'
+        type: boolean
+        required: true
+        default: true
+      publish_release:
+        description: 'Publish GitHub Release'
+        type: boolean
+        required: true
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install arm64 cross-compiler and QEMU
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            gcc-aarch64-linux-gnu qemu-user-static zip
+
+      - name: Build arm64 bin/qcmon
+        run: |
+          sh build-qcmon.sh arm64 bin/qcmon
+          chmod 755 bin/qcmon
+          qemu-aarch64-static ./bin/qcmon -v
+
+      - name: Run unit tests and arm64 c-test
+        run: |
+          for t in chg-unit cool-unit mount-unit zone-rank; do
+            sh "tests/$t.sh"
+          done
+          sudo sh tests/state-unit.sh
+          sudo sh tests/c-test.sh "qemu-aarch64-static ./bin/qcmon"
+
+      - name: Commit rebuilt bin/qcmon to main
+        if: github.event_name == 'workflow_dispatch' && inputs.commit_bin == true
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add bin/qcmon
+          if ! git diff --cached --quiet; then
+            git commit -m "chore: rebuild arm64 bin/qcmon via CI"
+            git push
+          else
+            echo "bin/qcmon unchanged"
+          fi
+
+      - name: Package flashable C module zip
+        if: startsWith(github.ref, 'refs/tags/') || inputs.publish_release == true
+        run: |
+          VER=$(sed -n 's/^version=//p' module.prop | head -n 1)
+          ZIP="QuickCharge-v${VER}.zip"
+          TAG="${GITHUB_REF_NAME}"
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+            TAG="$VER"
+          fi
+          zip -r9 "$ZIP" META-INF bin lib webroot customize.sh post-fs-data.sh service.sh action.sh uninstall.sh module.prop LICENSE
+          echo "ZIP_NAME=$ZIP" >> "$GITHUB_ENV"
+          echo "REL_TAG=$TAG" >> "$GITHUB_ENV"
+          echo "REL_TITLE=Quick Charge v${VER}" >> "$GITHUB_ENV"
+
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/') || inputs.publish_release == true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$REL_TAG" >/dev/null 2>&1; then
+            gh release upload "$REL_TAG" "$ZIP_NAME" update.json RELEASE.md --clobber
+          else
+            gh release create "$REL_TAG" "$ZIP_NAME" update.json RELEASE.md \
+              --title "$REL_TITLE" --notes-file RELEASE.md
+          fi

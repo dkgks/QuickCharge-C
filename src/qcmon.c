@@ -82,6 +82,8 @@ static char g_log[320];
 static char g_log_old[320];
 static char g_run[300];
 static char g_moddir[MAXPATH] = "";
+static char g_service_sh[MAXPATH + 16] = "";
+static int g_had_service_sh = 0;
 static char g_sys[128] = "";       /* 测试用：把 / 换成别的根，真机留空 */
 
 static char g_ps[MAXPATH];
@@ -93,7 +95,7 @@ static char g_oplus[MAXPATH];
 static char g_shellproc[MAXPATH];
 
 /* 运行时状态文件，命名与 shell 版一致 */
-static char g_scr_orig[320], g_scr_way[320], g_scr_fail[320], g_fcc_norm[320];
+static char g_scr_orig[320], g_scr_way[320], g_scr_fail[320], g_fcc_norm[320], g_fcc_node[320];
 static char g_unlock_orig[320];
 static char g_spoof_flag[320];
 static char g_sensor[320];
@@ -387,15 +389,23 @@ static int state_set(const char *k, const char *v)
         tmpk[kl] = 0;
         int w = (kl < len && !strcmp(tmpk, k));
         if (w) {
-            o += snprintf(out + o, sizeof out - o, "%s=%s\n", k, v);
+            int n = snprintf(out + o, sizeof out - o, "%s=%s\n", k, v);
+            if (n < 0 || (size_t)n >= sizeof out - o) return -1;
+            o += (size_t)n;
             found = 1;
         } else {
-            if (o + len < sizeof out) { memcpy(out + o, p, len); o += len; }
+            if (len >= sizeof out - o) return -1;
+            memcpy(out + o, p, len);
+            o += len;
         }
         if (!nl) break;
         p = nl + 1;
     }
-    if (!found) o += snprintf(out + o, sizeof out - o, "%s=%s\n", k, v);
+    if (!found) {
+        int n = snprintf(out + o, sizeof out - o, "%s=%s\n", k, v);
+        if (n < 0 || (size_t)n >= sizeof out - o) return -1;
+        o += (size_t)n;
+    }
     out[o] = 0;
 
     snprintf(tmp, sizeof tmp, "%s.t.%d", g_state, (int)getpid());
@@ -1064,6 +1074,14 @@ static void scr_learn(void)
     if (v < 500) return;
     if (v > 12000) v = 12000;
 
+    char nprev[MAXPATH] = "";
+    if (read_line(g_fcc_node, nprev, sizeof nprev) < 0 || strcmp(nprev, fcc) != 0) {
+        unlink(g_fcc_norm);
+        char nb[MAXPATH + 2];
+        snprintf(nb, sizeof nb, "%s\n", fcc);
+        write_str(g_fcc_node, nb);
+    }
+
     int old = 0;
     char b[32];
     if (read_line(g_fcc_norm, b, sizeof b) == 0) old = atoi(b);
@@ -1165,7 +1183,12 @@ static int scr_apply(void)
      * 对 µA 节点就会写进 3000（=3mA），接管等于没接管。 */
     char raw[32] = "";
     read_line(fcc, raw, sizeof raw);
-    int ua = atoi(raw) > 100000;
+    int raw_v = atoi(raw);
+    int ua;
+    if (raw_v > 100000) ua = 1;
+    else if (raw_v >= 100) ua = 0;
+    else ua = !(strstr(fcc, "/oplus_chg/") || strstr(fcc, "input_current_limit") ||
+                strstr(fcc, "/charger/current_max"));
     g_scr_cur = cur;
     {
         const char *base = strrchr(fcc, '/');
@@ -1878,6 +1901,14 @@ static void batt_sp_guard(void)
     }
     if (want < 20 || want > 45) { batt_sp_off(); return; }
     if (!strcmp(g_c.temp_mode, "off")) { batt_sp_off(); return; }
+    if (!strcmp(g_c.temp_mode, "charge")) {
+        char st[32];
+        batt_status(st, sizeof st);
+        if (strcmp(st, "Charging") && strcmp(st, "Full")) {
+            if (g_batt_sp_on) batt_sp_off();
+            return;
+        }
+    }
 
     /* 不看真实温度：开着就一直伪装，满速优先 */
     if (want == g_batt_sp_last && g_batt_sp_on) return;
@@ -2231,15 +2262,17 @@ static void sync_desc(void)
     char line[MAXLINE], buf[8192];
     size_t o = 0;
     while (fgets(line, sizeof line, f)) {
+        int n;
         if (!strncmp(line, "description=", 12)) {
             char *e = line + strlen(line);
             while (e > line && (e[-1] == '\n' || e[-1] == '\r')) *--e = 0;
             snprintf(cur, sizeof cur, "%s", line + 12);
-            o += snprintf(buf + o, sizeof buf - o, "description=%s\n", want);
+            n = snprintf(buf + o, sizeof buf - o, "description=%s\n", want);
         } else {
-            o += snprintf(buf + o, sizeof buf - o, "%s", line);
+            n = snprintf(buf + o, sizeof buf - o, "%s", line);
         }
-        if (o >= sizeof buf - MAXLINE) break;
+        if (n < 0 || (size_t)n >= sizeof buf - o) { fclose(f); return; }
+        o += (size_t)n;
     }
     fclose(f);
     if (!strcmp(cur, want)) return;
@@ -2282,6 +2315,26 @@ static void spoof_pending(void)
 
 static char g_lock[340];
 
+/* 校验持锁 PID 是否仍为本守护（防异常重启后 PID 被无关进程复用） */
+static int pid_is_daemon(int pid)
+{
+    if (pid <= 1 || pid == (int)getpid() || kill(pid, 0) != 0) return 0;
+
+    char cp[64], cmd[256];
+    snprintf(cp, sizeof cp, "/proc/%d/cmdline", pid);
+    int fd = open(cp, O_RDONLY | O_CLOEXEC);
+    if (fd < 0) return (errno == ENOENT || errno == ESRCH) ? 0 : 1;
+
+    ssize_t r = read(fd, cmd, sizeof cmd - 1);
+    close(fd);
+    if (r <= 0) return 0;
+    for (ssize_t i = 0; i < r; i++) {
+        if (cmd[i] == '\0') cmd[i] = ' ';
+    }
+    cmd[r] = 0;
+    return strstr(cmd, "qcmon") != NULL || strstr(cmd, "service.sh") != NULL;
+}
+
 static void lock_acquire(void)
 {
     snprintf(g_lock, sizeof g_lock, "%s/daemon.lock", g_run);
@@ -2291,7 +2344,7 @@ static void lock_acquire(void)
         snprintf(p, sizeof p, "%s/pid", g_lock);
         if (read_line(p, b, sizeof b) == 0) {
             int pid = atoi(b);
-            if (pid > 1 && pid != (int)getpid() && kill(pid, 0) == 0) {
+            if (pid_is_daemon(pid)) {
                 fprintf(stderr, "qcmon: 已有实例 pid=%d\n", pid);
                 exit(0);
             }
@@ -2300,7 +2353,10 @@ static void lock_acquire(void)
         snprintf(q, sizeof q, "%s/pid", g_lock);
         unlink(q);
         rmdir(g_lock);
-        if (mkdir(g_lock, 0755) < 0) return;
+        if (mkdir(g_lock, 0755) < 0) {
+            fprintf(stderr, "qcmon: 获取锁失败（errno=%d）\n", errno);
+            exit(0);
+        }
     }
     char p[400], b[32];
     snprintf(p, sizeof p, "%s/pid", g_lock);
@@ -2376,6 +2432,7 @@ static void paths_init(void)
     snprintf(g_scr_way, sizeof g_scr_way, "%s/scr.way", g_run);
     snprintf(g_scr_fail, sizeof g_scr_fail, "%s/scr.fail", g_run);
     snprintf(g_fcc_norm, sizeof g_fcc_norm, "%s/fcc.norm", g_run);
+    snprintf(g_fcc_node, sizeof g_fcc_node, "%s/fcc.node", g_run);
     snprintf(g_unlock_orig, sizeof g_unlock_orig, "%s/unlock.orig", g_run);
     snprintf(g_spoof_flag, sizeof g_spoof_flag, "%s/spoof.pending", g_run);
     snprintf(g_sensor, sizeof g_sensor, "%s/sensor", g_run);
@@ -2758,7 +2815,16 @@ int main(int argc, char **argv)
     log_msg("I", "daemon", "qcmon %s 启动：tick=%ds mode=%s", VER, g_c.tick, g_c.temp_mode);
     if (g_c.log_level >= 1) log_env();
 
+    if (g_moddir[0]) {
+        snprintf(g_service_sh, sizeof g_service_sh, "%s/service.sh", g_moddir);
+        g_had_service_sh = (access(g_service_sh, F_OK) == 0);
+    }
+
     while (!g_stop) {
+        if (g_had_service_sh && access(g_service_sh, F_OK) != 0) {
+            log_msg("I", "daemon", "模块目录已移除，守护退出");
+            break;
+        }
         int changed = 0;
         int sec = loop_once(&changed);
         if (changed) sync_desc();

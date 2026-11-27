@@ -5,5 +5,5 @@ version=3.1.15-c
 versionCode=3011500
 channel=c
 author=Xiaohao
-updateJson=https://github.com/XiaohaoQvQ/QuickCharge-C/releases/latest/download/update.json
+updateJson=https://github.com/dkgks/QuickCharge-C/releases/latest/download/update.json
 description=QC·欧加真温控与充电改写

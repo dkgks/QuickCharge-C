@@ -1785,6 +1785,13 @@ sd_batt_sp_guard() {
     esac
     [ "$want" -ge 20 ] && [ "$want" -le 45 ] || { sd_spoof_batt_off; return 1; }
     [ "${_st_temp_mode:-}" = off ] && { sd_spoof_batt_off; return 0; }
+    if [ "${_st_temp_mode:-}" = charge ]; then
+        sd_batt_status_v
+        case "$_sd_rv" in
+            Charging|Full) ;;
+            *) [ "${_sd_batt_sp_on:-0}" = 1 ] && sd_spoof_batt_off; return 0 ;;
+        esac
+    fi
 
     # 不看真实温度：开着就一直伪装，满速优先。
     [ "$want" = "$_sd_batt_sp_last" ] && [ "${_sd_batt_sp_on:-0}" = 1 ] && return 0
@@ -2028,16 +2035,17 @@ sd_transform() {
 }
 
 sd_fingerprint() {
-    local vc off
+    local vc off bs
     # 规范键名是 versionCode（Magisk/KernelSU 都按这个读），旧版曾写成全小写，
     # 这里两个都试一次，升级过程中不会因为读到空值把指纹打成 0。
     vc=$(sd_prop_get versionCode)
     [ -n "$vc" ] || vc=$(sd_prop_get versioncode)
     off=$(sd_state_int curve_offset 120 0 300)
-    printf '%s-%s-%s-%s' \
+    bs=$(sd_state_get batt_spoof off)
+    printf '%s-%s-%s-%s-%s' \
         "$(getprop ro.build.display.id)" \
         "$(getprop ro.build.version.security_patch)" \
-        "${vc:-0}" "$off"
+        "${vc:-0}" "$off" "$bs"
 }
 
 # 产物自检：改写只是文本替换，语义可能被改坏。只查两条能确定的：
@@ -2370,7 +2378,7 @@ sd_mounts_content_ok() {
 }
 
 sd_mounts_alive() {
-    if sd_nm_active; then
+    if sd_nm_active || sd_mm_active; then
         [ -s "$SD_NM_LIST" ] && [ -d "$SD_NM_ROOT" ] && return 0
         return 1
     fi
@@ -2704,13 +2712,13 @@ sd_scr_apply() {
         rm -f "$SD_SCR_FAIL" 2>/dev/null
         return 0
     fi
+    raw=""
+    sd_read1 "$_sd_sf" && raw=$_sd_rv
+    case "$raw" in ''|*[!0-9]*) raw=$cur ;; esac
     if [ ! -f "$SD_SCR_ORIG" ]; then
-        raw=""
-        sd_read1 "$_sd_sf" && raw=$_sd_rv
-        case "$raw" in ''|*[!0-9]*) raw=$cur ;; esac
         printf '%s|%s\n' "$_sd_sf" "$raw" >"$SD_SCR_ORIG" 2>/dev/null
     fi
-    _sd_curr_unit "$_sd_sf" "$cur"
+    _sd_curr_unit "$_sd_sf" "$raw"
     if [ "$_sd_unit" = ua ]; then
         printf '%s\n' "$((tgt * 1000))" >"$_sd_sf" 2>/dev/null
     else
@@ -2857,7 +2865,10 @@ _sd_curr_unit() {
     local p="$1" cur="${2:-}"
     case "$cur" in
         ''|*[!0-9]*) ;;
-        *) [ "$cur" -gt 100000 ] && { _sd_unit=ua; return 0; } ;;
+        *)
+            [ "$cur" -gt 100000 ] && { _sd_unit=ua; return 0; }
+            [ "$cur" -ge 100 ] && { _sd_unit=ma; return 0; }
+            ;;
     esac
     case "$p" in
         */oplus_chg/*|*/input_current_limit|*/charger/current_max) _sd_unit=ma ;;

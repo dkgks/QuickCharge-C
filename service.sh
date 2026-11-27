@@ -73,7 +73,7 @@ sd_apply_state() {
 
 sd_daemon() {
     local lock="$SD_RUN/daemon.lock" holder tick
-    local mode last_mode="" cnt=0 _hzr=0 _hz_n=0 _sd_chg=0 _ws=0
+    local mode last_mode="" cnt=0 _hzr=0 _hz_n=0 _sd_chg=0 _ws=0 _sd_sp_cleared=0
     local _log_out="" _log_cnt=0 _sd_scr_once=0 _pid=""
     local _bst=""
     _sd_sp=""
@@ -139,7 +139,7 @@ sd_daemon() {
     sd_session daemon "守护启动"
     sd_info daemon "守护启动 pid=$$"
 
-    trap 'sd_info daemon "收到 TERM，退出"; rm -rf "$SD_RUN/daemon.lock"; rm -f "$SD_RUN/daemon.pid" "$SD_RUN/daemon.ver"; exit 0' TERM INT
+    trap 'sd_info daemon "收到 TERM，退出"; sd_spoof_clear; sd_shell_emul 0; sd_scr_release; sd_unlock_restore; rm -rf "$SD_RUN/daemon.lock"; rm -f "$SD_RUN/daemon.pid" "$SD_RUN/daemon.ver"; exit 0' TERM INT
 
     trap 'sd_info daemon "收到重载信号，立即刷新参数"; [ -n "${_sd_sp:-}" ] && kill "$_sd_sp" 2>/dev/null; _sd_reload=1' USR1
 
@@ -236,9 +236,24 @@ sd_daemon() {
                 sd_charge_tick
                 ;;
             off)
+                sd_shell_emul 0
                 _sd_last_out=0
                 ;;
         esac
+
+        if [ "$mode" = static ] || { [ "$mode" = charge ] && [ "$_sd_chg" = 1 ]; }; then
+            if [ "$_sd_sp_cleared" = 1 ]; then
+                _sd_sp_cleared=0
+                sd_valid_temp "${_st_core_temp:-}" && sd_spoof_apply core "$_st_core_temp" >/dev/null 2>&1
+                sd_valid_temp "${_st_noncore_temp:-}" && sd_spoof_apply noncore "$_st_noncore_temp" >/dev/null 2>&1
+            fi
+        else
+            if [ "$_sd_sp_cleared" != 1 ]; then
+                _sd_sp_cleared=1
+                [ -n "${_st_core_temp:-}" ] && [ "$_st_core_temp" != off ] && sd_spoof_clear_scope core
+                [ -n "${_st_noncore_temp:-}" ] && [ "$_st_noncore_temp" != off ] && sd_spoof_clear_scope noncore
+            fi
+        fi
 
         # 以前充电时压到 3s，为的是尽快把 cool_down 清零。3.1.13 起 cool_down
         # 只读（写它会让 OPlus 重选档），3 秒一次只剩耗电，所以改回按配置走。
@@ -275,6 +290,10 @@ sd_daemon() {
         _sd_pause "$_ws"
     done
 
+    sd_spoof_clear
+    sd_shell_emul 0
+    sd_scr_release
+    sd_unlock_restore
     rm -rf "$SD_RUN/daemon.lock" "$SD_RUN/daemon.pid" "$SD_RUN/daemon.ver"
     sd_info daemon "守护已停止"
 }
