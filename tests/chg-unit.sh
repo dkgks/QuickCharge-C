@@ -232,6 +232,31 @@ run_sh 'sd_info log "事件应出现"; sd_chg_snapshot 1'
 grep -q '事件应出现' "$BASE/data/log.txt" && ok "级别 1 写事件" || bad "级别 1 丢了事件"
 chk "级别 1 写快照" "$(cnt)" "1"
 
+echo "[11] 未插电 µV 噪声不放大与双电芯功率折算"
+setup
+printf 'Discharging\n' >"$ROOT/ps/battery/status"
+printf '5000000\n'     >"$ROOT/ps/usb/voltage_max"
+printf '4000\n'        >"$ROOT/ps/usb/voltage_now"
+printf 'Unknown\n'     >"$ROOT/ps/usb/type"
+line=$(run_sh 'sd_chg_line')
+echo "$line" | grep -q 'vusb=0.00V' && ok "未插电 µV 噪声不放大" || bad "vusb 噪声误放大: $line"
+
+setup
+printf 'Discharging\n' >"$ROOT/ps/battery/status"
+printf '5000000\n'     >"$ROOT/ps/usb/voltage_max"
+printf 'Unknown\n'     >"$ROOT/ps/usb/type"
+run_sh 'printf "3000\n" >"$SD_PS/usb/voltage_now"; printf "1500000\n" >"$SD_PS/battery/current_now"; _sd_chg_scan=0; sd_chg_snapshot 0
+        printf "8000\n" >"$SD_PS/usb/voltage_now"; printf "4500000\n" >"$SD_PS/battery/current_now"; _sd_chg_scan=0; sd_chg_snapshot 0'
+chk "未插电噪声与负载抖动不刷屏" "$(cnt)" "1"
+
+setup
+printf '3900000\n'    >"$ROOT/ps/battery/voltage_now"
+printf -- '-4000000\n' >"$ROOT/ps/battery/current_now"
+printf '1,2,0\n'      >"$ROOT/oplus/battery/aging_ffc_data"
+line=$(run_sh 'sd_chg_line')
+echo "$line" | grep -q 'cells=2' && ok "dual cells 识别" || bad "cells 错: $line"
+echo "$line" | grep -q 'pb=31.2W' && ok "双电芯功率按包电压折算" || bad "pb 错: $line"
+
 echo
 echo "结果：通过 $PASS，失败 $FAIL"
 [ "$FAIL" -eq 0 ]

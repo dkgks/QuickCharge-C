@@ -1,16 +1,18 @@
-# Quick Charge v3.1.15-c (Native C)
+# Quick Charge v3.1.16-c (Native C)
 
-基于上游 `XiaohaoQvQ/QuickCharge-C` 构建的 ARM64 原生 C 守护进程版发布包，更新通道 `c`（`versionCode: 3011500`）。
+基于上游 `XiaohaoQvQ/QuickCharge-C` 构建的 ARM64 原生 C 守护进程版发布包，更新通道 `c`（`versionCode: 3011600`）。
 
 ## 主要变更
 
-- **新增物理高温断开兜底 (`hot_cutoff`)**：在 `qcmon.c`、`qc.sh`、`action.sh` 与 WebUI 同步支持 `42–55℃` 硬保护阈值及 `3℃` 降温滞回恢复，兼顾快充性能与热安全。
-- **优化拔线状态恢复**：将 `scr.fail` 异常标记改为拔线时自动清理，并保留已校准的 `fcc.norm` 满充参考值。
-- **精简安装流程**：移除 `customize.sh` 刷入弹窗。
-- **ARM64 CI/CD 流水线**：使用 `aarch64-linux-gnu-gcc` 自动交叉编译 `bin/qcmon`，并通过 QEMU `tests/c-test.sh` 与全部单元测试后自动打包发布；更新源指向 `dkgks/QuickCharge-C`。
+- **修复未插电 `vusb` 噪声放大与待机刷屏**：未插电时不再把 `µV` 级悬空噪声（如 `1000–8000 µV`）误判为 `mV` 放大成 `1~8V`；未充电判重签名忽略瞬时负载波动与悬空 `vusb` 跳变。
+- **补齐骁龙新平台识别 (`plat_resolve`)**：新增 `canoe`（SM8850）、`kalama`、`crow` 等平台代号及 `ro.soc.model` / `ro.hardware` 识别，消除 C 守护误判 `other` 的问题。
+- **修复默认 `fb` 节点路径**：更正为 `/sys/class/graphics/fb0/blank`，与 Shell 侧保持一致。
+- **支持电芯数检测 (`cells_resolve`) 与双电芯功率计算**：不再硬编码 `cells=?`，同步支持 `cells_mode`、`aging_ffc_data`、`bcc_parms` 与包电压推断，并在 `pb` 计算中按双芯折算。
+- **对齐输入电流候选 (`chg_input`)**：补齐 `oplus_chg` 及 `charger/battery` 输入电流节点并兼容负值归一。
+- **继承 3.1.15-c 增强**：`hot_cutoff` 高温断开兜底、`scr.fail` 拔线清理、`customize.sh` 静默安装。
 
 ## 发布产物
 
-- `QuickCharge-v3.1.15-c.zip`：内置 ARM64 `bin/qcmon` 的完整可刷入模块包
+- `QuickCharge-v3.1.16-c.zip`：内置 ARM64 `bin/qcmon` 的完整可刷入模块包
 - `update.json`：模块在线更新元数据
 - `RELEASE.md`：本版本更新说明

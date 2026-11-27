@@ -3148,7 +3148,9 @@ _sd_chg_fmt() {
 # 输入侧实测电流（µA）。usb/current_max 是充电器能力上限，不是实际输入，
 # 日志里只写 imax 会让人以为一直卡在 2A。这里优先读实测值。
 sd_chg_input_v() {
+    local chg="${1:-1}" online="${2:--1}" raw_imax="${3:-0}"
     local p v abs best=0 babs=0
+    case "$raw_imax" in ''|*[!0-9-]*) raw_imax=0 ;; esac
     for p in "$SD_PS/usb/current_now" "$SD_PS/usb/input_current_now" \
              "$SD_PS/usb/current_avg" "$SD_PS/usb_input/current_now" \
              "$SD_OPLUS_CHG/charger/current_now" "$SD_OPLUS_CHG/current_now" \
@@ -3157,9 +3159,11 @@ sd_chg_input_v() {
         sd_read1 "$p" || continue
         v=$_sd_rv
         case "$v" in ''|*[!0-9-]*) continue ;; esac
-        sd_uv_norm "$v" && v=$_sd_rv
         abs=$v; [ "$abs" -lt 0 ] && abs=$((-abs))
         [ "$abs" -eq 0 ] && continue
+        if [ "$online" != 0 ] && { [ "$chg" = 1 ] || [ "$raw_imax" -lt 100000 ]; }; then
+            sd_uv_norm "$abs" && abs=$_sd_rv
+        fi
         if [ "$abs" -gt "$babs" ]; then best=$abs; babs=$abs; fi
     done
     [ "$babs" -gt 0 ] && { _sd_rv=$best; return 0; }
@@ -3210,27 +3214,42 @@ sd_chg_current_v() {
 # 用全局变量而不是命令替换，两个结果才都留得住。
 sd_chg_line_fill() {
     local cap vbat ibat vusb iusb imax type rtype cool vooc tech bt st f capk btk pwk pwc ibm usbk
-    local pin pb cells ibs
+    local pin pb cells ibs online raw_vmax raw_imax chg vpack
     st=""; sd_batt_status_v && st=$_sd_rv
+    chg=0; case "$st" in Charging|Full) chg=1 ;; esac
     cap=""; sd_ps_attr_v capacity && cap=$_sd_rv
     vbat=""; sd_ps_attr_v voltage_now && vbat=$_sd_rv
     ibat=""; sd_chg_current_v && ibat=$_sd_rv
     vusb=""; sd_read1 "$SD_PS/usb/voltage_now" && vusb=$_sd_rv
-    iusb=""; sd_chg_input_v && iusb=$_sd_rv
     imax=""; sd_read1 "$SD_PS/usb/current_max" && imax=$_sd_rv
+    raw_vmax=0; sd_read1 "$SD_PS/usb/voltage_max" && raw_vmax=$_sd_rv
+    case "$raw_vmax" in ''|*[!0-9-]*) raw_vmax=0 ;; esac
+    raw_imax=${imax:-0}; case "$raw_imax" in ''|*[!0-9-]*) raw_imax=0 ;; esac
+    online=-1
+    sd_read1 "$SD_PS/usb/online" && online=$_sd_rv || { sd_read1 "$SD_PS/usb/present" && online=$_sd_rv; }
+    case "$online" in ''|*[!0-9-]*) online=-1 ;; esac
+    iusb=""; sd_chg_input_v "$chg" "$online" "$raw_imax" && iusb=$_sd_rv
     type=""; sd_read1 "$SD_PS/usb/type" && type=$_sd_rv
     rtype=""; sd_read1 "$SD_PS/usb/real_type" && rtype=$_sd_rv
     cool=""; sd_read1 "$SD_OPLUS_CHG/cool_down" && cool=$_sd_rv
     vooc=""; sd_read1 "$SD_OPLUS_CHG/voocchg_ing" && vooc=$_sd_rv
     tech=""; sd_read1 "$SD_OPLUS_CHG/charge_technology" && tech=$_sd_rv
     bt=""; sd_batt_temp_v && bt=$_sd_rv
-    # 归一单位，否则报 mV 的机型日志里 vbat=0.004V、判重功率恒 0
+    # 归一单位，未插电且 vmax 本就处于 µV 量级时不放大 vusb 悬空噪声
     [ -n "$vbat" ] && sd_uv_norm "$vbat" && vbat=$_sd_rv
-    [ -n "$vusb" ] && sd_uv_norm "$vusb" && vusb=$_sd_rv
+    if [ -n "$vusb" ] && [ "$online" != 0 ] && { [ "$chg" = 1 ] || { [ "$raw_vmax" -lt 100000 ] && [ "$raw_imax" -lt 100000 ]; }; }; then
+        sd_uv_norm "$vusb" && vusb=$_sd_rv
+    fi
     [ -n "$imax" ] && sd_uv_norm "$imax" && imax=$_sd_rv
 
     cells=1
     sd_cells_resolve && cells=$_sd_rv
+    vpack=$vbat
+    if [ "$cells" = 2 ] && [ -n "$vbat" ]; then
+        case "$vbat" in ''|*[!0-9]*) ;; *)
+            [ "$vbat" -ge 2500000 ] && [ "$vbat" -le 5000000 ] && vpack=$((vbat * 2))
+        ;; esac
+    fi
 
     # 输入侧与电池侧功率都算出来：输入掉、电池不掉是充电器/线的问题；
     # 两边一起掉才是负载或降档。日志里没有这两个数就只能猜。
@@ -3238,8 +3257,8 @@ sd_chg_line_fill() {
     if [ -n "$iusb" ] && [ -n "$vusb" ]; then
         pin=$(awk -v i="$iusb" -v v="$vusb" 'BEGIN{ printf "%.1f", (i<0?-i:i)*v/1e12 }' 2>/dev/null)
     fi
-    if [ -n "$ibat" ] && [ -n "$vbat" ]; then
-        pb=$(awk -v i="$ibat" -v v="$vbat" \
+    if [ -n "$ibat" ] && [ -n "$vpack" ]; then
+        pb=$(awk -v i="$ibat" -v v="$vpack" \
             'BEGIN{ printf "%.1f", (i<0?-i:i)*v/1e12 }' 2>/dev/null)
     fi
     case "$pin" in ''|*[!0-9.]*|-1) pin="?" ;; esac
@@ -3262,23 +3281,26 @@ sd_chg_line_fill() {
     case "$capk" in ''|*[!0-9]*) capk=0 ;; esac
     case "$btk" in ''|*[!0-9]*) btk=0 ;; esac
 
-    # 判重不再看 vbat/ibat 的瞬时值：它们每 3 秒就掉一次档再弹回来（见 sd_power_median
-    # 的注释），按 100mV/200mA 分档照样每轮跨档，日志会被灌成 3 秒一条。
-    # 改用中值功率分档（1W），脉动被滤掉，真实降档依然跨档。
-    pwk=0
-    if [ -n "$ibat" ] && [ -n "$vbat" ]; then
-        case "$st" in *Charging*|Full) pwc=1 ;; *) pwc=0 ;; esac
-        ibm=$ibat
-        [ "$ibm" -lt 0 ] && ibm=$((-ibm))
-        ibm=$((ibm / 1000))
-        sd_power_median "$ibm" "$pwc" && ibm=$_sd_rv
-        case "$ibm" in ''|*[!0-9]*) ibm=0 ;; esac
-        pwk=$(( ibm * vbat / 1000000000 ))
-    fi
+    # 判重不再看 vbat/ibat 的瞬时值；改用中值功率分档（1W）。
+    # 未充电时只比状态/电量(5%)/温度(2℃)/类型/亮屏，防止空载电流与噪声刷屏。
+    if [ "$chg" = 1 ]; then
+        pwk=0
+        if [ -n "$ibat" ] && [ -n "$vpack" ]; then
+            pwc=1
+            ibm=$ibat
+            [ "$ibm" -lt 0 ] && ibm=$((-ibm))
+            ibm=$((ibm / 1000))
+            sd_power_median "$ibm" "$pwc" && ibm=$_sd_rv
+            case "$ibm" in ''|*[!0-9]*) ibm=0 ;; esac
+            pwk=$(( ibm * vpack / 1000000000 ))
+        fi
 
-    usbk=-1
-    case "${vusb:-}" in ''|*[!0-9]*) ;; *) usbk=$(( (${vusb} + 500000) / 1000000 )) ;; esac
-    _sd_chg_sig_v="st=${st:-?} pw=${pwk}W cap=$((capk / 5 * 5)) bt=$((btk / 2 * 2)) usb=$usbk imax=${imax:-?} type=${type:-?} cool=${cool:-?} vooc=${vooc:-?} tech=${tech:-?} scr=${_sd_screen_on:-?}"
+        usbk=-1
+        case "${vusb:-}" in ''|*[!0-9]*) ;; *) usbk=$(( (${vusb} + 500000) / 1000000 )) ;; esac
+        _sd_chg_sig_v="st=${st:-?} pw=${pwk}W cap=$((capk / 5 * 5)) bt=$((btk / 2 * 2)) usb=$usbk imax=${imax:-?} type=${type:-?} cool=${cool:-?} vooc=${vooc:-?} tech=${tech:-?} scr=${_sd_screen_on:-?}"
+    else
+        _sd_chg_sig_v="st=${st:-?} cap=$((capk / 5 * 5)) bt=$((btk / 2 * 2)) type=${type:-?} scr=${_sd_screen_on:-?}"
+    fi
 }
 
 sd_chg_line() {

@@ -14,7 +14,7 @@
 
 ## 快速上手
 
-1. 前往 [Releases](https://github.com/dkgks/QuickCharge-C/releases/latest) 下载 `QuickCharge-v3.1.15-c.zip`。
+1. 前往 [Releases](https://github.com/dkgks/QuickCharge-C/releases/latest) 下载 `QuickCharge-v3.1.16-c.zip`。
 2. 在 Magisk / KernelSU / APatch 中刷入模块并重启（模块内已内置经 CI 静态/交叉编译验证的 ARM64 `bin/qcmon`）。
 3. 通过 **WebUI** 或 `action.sh` / `qcmon` 命令行管理。
 

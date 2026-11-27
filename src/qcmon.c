@@ -71,6 +71,7 @@ typedef struct {
     char hz[8];          /* "off" 或数值 */
     int hz_hard;
     char hz_prev_mcfr[16];
+    char cells_mode[8];
     int hot_cutoff;      /* 0=off, 42-55 */
 } conf_t;
 
@@ -308,6 +309,7 @@ static void conf_defaults(void)
     memset(&g_c, 0, sizeof g_c);
     snprintf(g_c.temp_mode, sizeof g_c.temp_mode, "off");
     snprintf(g_c.hz, sizeof g_c.hz, "off");
+    snprintf(g_c.cells_mode, sizeof g_c.cells_mode, "auto");
     g_c.shell_temp = 30;   /* 与 shell 侧 sd_shell_target 的缺省一致 */
     g_c.tick = 15;
     g_c.chg_unlock = 0;
@@ -354,6 +356,7 @@ static void conf_load(void)
         else if (!strcmp(k, "hz")) snprintf(g_c.hz, sizeof g_c.hz, "%s", v);
         else if (!strcmp(k, "hz_hard")) g_c.hz_hard = parse_i(v, 0);
         else if (!strcmp(k, "hz_prev_mcfr")) snprintf(g_c.hz_prev_mcfr, sizeof g_c.hz_prev_mcfr, "%s", v);
+        else if (!strcmp(k, "cells_mode")) snprintf(g_c.cells_mode, sizeof g_c.cells_mode, "%s", v);
         else if (!strcmp(k, "hot_cutoff")) g_c.hot_cutoff = parse_i(v, 0);
     }
     fclose(f);
@@ -950,14 +953,26 @@ static void plat_resolve(void)
     char b[128] = "";
     FILE *p = popen("getprop ro.soc.manufacturer 2>/dev/null", "r");
     if (p) { if (fgets(b, sizeof b, p)) {} pclose(p); }
-    if (strstr(b, "MediaTek") || strstr(b, "MTK")) { snprintf(g_plat, sizeof g_plat, "mtk"); return; }
-    if (strstr(b, "Qualcomm")) { snprintf(g_plat, sizeof g_plat, "qcom"); return; }
-    b[0] = 0;
+    if (strcasestr(b, "MediaTek") || strcasestr(b, "MTK")) { snprintf(g_plat, sizeof g_plat, "mtk"); return; }
+    if (strcasestr(b, "Qualcomm") || strcasestr(b, "QTI") || strcasestr(b, "QCOM")) { snprintf(g_plat, sizeof g_plat, "qcom"); return; }
+
+    char bp[64] = "", hw[64] = "", sm[64] = "", all[196] = "";
     p = popen("getprop ro.board.platform 2>/dev/null", "r");
-    if (p) { if (fgets(b, sizeof b, p)) {} pclose(p); }
-    if (strstr(b, "mt") || strstr(b, "MT")) snprintf(g_plat, sizeof g_plat, "mtk");
-    else if (strstr(b, "sm") || strstr(b, "msm") || strstr(b, "kona") ||
-             strstr(b, "taro") || strstr(b, "sun") || strstr(b, "pineapple"))
+    if (p) { if (fgets(bp, sizeof bp, p)) bp[strcspn(bp, "\r\n")] = 0; pclose(p); }
+    p = popen("getprop ro.hardware 2>/dev/null", "r");
+    if (p) { if (fgets(hw, sizeof hw, p)) hw[strcspn(hw, "\r\n")] = 0; pclose(p); }
+    p = popen("getprop ro.soc.model 2>/dev/null", "r");
+    if (p) { if (fgets(sm, sizeof sm, p)) sm[strcspn(sm, "\r\n")] = 0; pclose(p); }
+    snprintf(all, sizeof all, "%s %s %s", bp, hw, sm);
+
+    if (strcasestr(all, "mtk") || strstr(all, "mt2") || strstr(all, "mt6") ||
+        strstr(all, "mt8") || strstr(all, "mt9") || strstr(all, "MT6") || strstr(all, "MT8"))
+        snprintf(g_plat, sizeof g_plat, "mtk");
+    else if (strcasestr(all, "qcom") || strcasestr(all, "sm") || strcasestr(all, "msm") ||
+             strcasestr(all, "kona") || strcasestr(all, "taro") || strcasestr(all, "kalama") ||
+             strcasestr(all, "crow") || strcasestr(all, "pineapple") || strcasestr(all, "sun") ||
+             strcasestr(all, "canoe") || strcasestr(all, "cliffs") || strcasestr(all, "volcano") ||
+             strcasestr(all, "lanai"))
         snprintf(g_plat, sizeof g_plat, "qcom");
     else snprintf(g_plat, sizeof g_plat, "other");
 }
@@ -1606,6 +1621,61 @@ static long bcc_current(void)
     return ma;
 }
 
+static int bcc_cells(long *v0, long *v1)
+{
+    char b[256], p[MAXPATH + 64];
+    snprintf(p, sizeof p, "%s/bcc_parms", g_oplus);
+    if (read_line(p, b, sizeof b) < 0) return -1;
+    int idx = 0, got0 = 0, got1 = 0;
+    char *s = b;
+    for (;;) {
+        idx++;
+        char *c = strchr(s, ',');
+        if (c) *c = 0;
+        if (idx == 7) {
+            char *e = NULL;
+            long v = strtol(s, &e, 10);
+            if (e != s) { *v0 = v; got0 = 1; }
+        } else if (idx == 8) {
+            char *e = NULL;
+            long v = strtol(s, &e, 10);
+            if (e != s) { *v1 = v; got1 = 1; }
+            break;
+        }
+        if (!c) break;
+        s = c + 1;
+    }
+    return (got0 && got1) ? 0 : -1;
+}
+
+static int cells_resolve(long vbat_uv)
+{
+    if (!strcmp(g_c.cells_mode, "1")) return 1;
+    if (!strcmp(g_c.cells_mode, "2")) return 2;
+
+    char b[128], p[MAXPATH + 64];
+    snprintf(p, sizeof p, "%s/aging_ffc_data", g_oplus);
+    if (read_line(p, b, sizeof b) == 0) {
+        char *c = strchr(b, ',');
+        if (c) {
+            int n = atoi(c + 1);
+            if (n == 1 || n == 2) return n;
+        }
+    }
+
+    long v0 = 0, v1 = 0;
+    if (bcc_cells(&v0, &v1) == 0) {
+        if (v0 >= 2500 && v0 <= 5000 && v1 >= 2500 && v1 <= 5000) {
+            long d = v0 > v1 ? v0 - v1 : v1 - v0;
+            long sum = v0 + v1;
+            if (d <= 500 && sum >= 7000 && sum <= 9600) return 2;
+        }
+    }
+
+    if (vbat_uv >= 6000000 && vbat_uv <= 9600000) return 2;
+    return 1;
+}
+
 /* 电池电流，统一 µA：bcc 优先，再回退 current_now / bms / current_avg。
  * bcc 绝对值小于 50mA 视为噪声（有的机型第 9 段不是总电流），继续往下找更大的值。 */
 /* 有的机型 current_now 报 mA、有的报 µA，判据与 shell 侧 sd_uv_norm 一致：
@@ -1684,19 +1754,34 @@ static long pw_median(long ma, int chg)
 
 /* 输入侧实测电流（µA）。usb/current_max 是充电器能力上限，不是实际输入；
  * 日志里只写 imax 会让人以为一直卡在 2A 没上去。 */
-static long chg_input(void)
+static long chg_input(int charging, long online, long raw_imax)
 {
-    static const char *cand[] = { "usb/current_now", "usb/input_current_now",
-                                  "usb/current_avg", "usb_input/current_now", NULL };
-    char p[MAXPATH];
+    static const char *ps_cand[] = {
+        "usb/current_now", "usb/input_current_now",
+        "usb/current_avg", "usb_input/current_now",
+        "charger/current_now", "battery/input_current_now", NULL
+    };
+    static const char *op_cand[] = {
+        "charger/current_now", "current_now", NULL
+    };
+    char p[MAXPATH + 64];
     long best = 0;
-    for (int i = 0; cand[i]; i++) {
+    int norm_ok = (online != 0) && (charging || raw_imax < 100000);
+    for (int i = 0; ps_cand[i]; i++) {
         long v;
-        snprintf(p, sizeof p, "%s/%s", g_ps, cand[i]);
+        snprintf(p, sizeof p, "%s/%s", g_ps, ps_cand[i]);
         if (path_num(p, &v) < 0 || v == 0) continue;
-        v = uv_norm(v);
-        if (v < 0) v = -v;
-        if (v > best) best = v;
+        long a = v < 0 ? -v : v;
+        if (norm_ok) a = uv_norm(a);
+        if (a > best) best = a;
+    }
+    for (int i = 0; op_cand[i]; i++) {
+        long v;
+        snprintf(p, sizeof p, "%s/%s", g_oplus, op_cand[i]);
+        if (path_num(p, &v) < 0 || v == 0) continue;
+        long a = v < 0 ? -v : v;
+        if (norm_ok) a = uv_norm(a);
+        if (a > best) best = a;
     }
     return best > 0 ? best : -1;
 }
@@ -1713,6 +1798,7 @@ static void chg_line(char *out, size_t n, char *sig, size_t sn)
     char a[24], b2[24], b3[24];
 
     batt_status(st, sizeof st);
+    int chg = (!strcmp(st, "Charging") || !strcmp(st, "Full")) ? 1 : 0;
     ps_num("capacity", &cap);
     ps_num("voltage_now", &vbat);
     ibat = chg_current();
@@ -1738,13 +1824,16 @@ static void chg_line(char *out, size_t n, char *sig, size_t sn)
     oplus_num("charge_technology", &tech);
 
     /* 有的机型 voltage_now / current_max 报 mV/mA，不归一会让 vbat 显示成
-     * 0.004V、判重功率恒 0。 */
+     * 0.004V、判重功率恒 0。未插电且 vmax 本就处于 µV 量级时不放大 vusb 噪声。 */
+    long raw_vmax = vmax, raw_imax = imax;
     vbat = uv_norm(vbat);
-    vusb = uv_norm(vusb);
     imax = uv_norm(imax);
     vmax = uv_norm(vmax);
-    iusb = chg_input();
+    if (online != 0 && (chg || (raw_vmax < 100000 && raw_imax < 100000))) vusb = uv_norm(vusb);
+    iusb = chg_input(chg, online, raw_imax);
 
+    int cells = cells_resolve(vbat);
+    long vpack = (cells == 2 && vbat >= 2500000 && vbat <= 5000000) ? vbat * 2 : vbat;
     int bt = batt_temp_ps();
 
     fmt_uv(vusb, 2, a, sizeof a);
@@ -1758,31 +1847,34 @@ static void chg_line(char *out, size_t n, char *sig, size_t sn)
     if (iusb > 0) snprintf(ibs, sizeof ibs, "%.2f", (double)iusb / 1e6);
     else snprintf(ibs, sizeof ibs, "?");
     if (iusb > 0 && vusb > 0) snprintf(pins, sizeof pins, "%.1f", (double)iusb * (double)vusb / 1e12);
-    if (ibat != -1 && vbat > 0) {
+    if (ibat != -1 && vpack > 0) {
         long iabs = ibat < 0 ? -ibat : ibat;
-        snprintf(pbs, sizeof pbs, "%.1f", (double)iabs * (double)vbat / 1e12);
+        snprintf(pbs, sizeof pbs, "%.1f", (double)iabs * (double)vpack / 1e12);
     }
     snprintf(out, n,
-             "vusb=%sV iusb=%sA imax=%sA vbat=%sV ibat=%s pin=%sW pb=%sW %ld%% %s cool=%ld vooc=%ld tech=%ld type=%s rtype=%s scr=%d cells=? status=%s",
+             "vusb=%sV iusb=%sA imax=%sA vbat=%sV ibat=%s pin=%sW pb=%sW %ld%% %s cool=%ld vooc=%ld tech=%ld type=%s rtype=%s scr=%d cells=%d status=%s",
              a, ibs, b2, b3, ib, pins, pbs,
              cap, tb,
-             cool, vooc, tech, type[0] ? type : "?", rtype[0] ? rtype : "?", g_screen_on, st);
+             cool, vooc, tech, type[0] ? type : "?", rtype[0] ? rtype : "?", g_screen_on, cells, st);
     if (sig && sn) {
-        /* 判重不看 vbat/ibat 瞬时值：bcc 电流会在两档间脉动（4.4V 电芯 ~60mΩ 内阻，
-         * ±600mA 正好对应 ±40mV），按 100mV/200mA 分档照样每轮跨档，日志被灌成 3 秒一条。
-         * 改用 5 点中值功率分档（1W），脉动滤掉，真实降档依然跨档。 */
-        long pwk = 0;
-        if (ibat != -1 && vbat > 0) {
-            long ibm = ibat < 0 ? -ibat / 1000 : ibat / 1000;
-            int chg = strstr(st, "Charging") || !strcmp(st, "Full") ? 1 : 0;
-            ibm = pw_median(ibm, chg);
-            pwk = ibm * vbat / 1000000000L;
+        if (chg) {
+            long pwk = 0;
+            if (ibat != -1 && vpack > 0) {
+                long ibm = ibat < 0 ? -ibat / 1000 : ibat / 1000;
+                ibm = pw_median(ibm, chg);
+                pwk = ibm * vpack / 1000000000L;
+            }
+            snprintf(sig, sn,
+                     "st=%s pw=%ldW cap=%ld bt=%d usb=%ld imax=%s type=%s cool=%ld vooc=%ld tech=%ld scr=%d",
+                     st, pwk, cap < 0 ? 0 : cap / 5 * 5, bt < 0 ? 0 : bt / 2 * 2,
+                     vusb > 0 ? (vusb + 500000) / 1000000 : -1, b2, type[0] ? type : "?", cool, vooc, tech,
+                     g_screen_on);
+        } else {
+            snprintf(sig, sn,
+                     "st=%s cap=%ld bt=%d type=%s scr=%d",
+                     st, cap < 0 ? 0 : cap / 5 * 5, bt < 0 ? 0 : bt / 2 * 2,
+                     type[0] ? type : "?", g_screen_on);
         }
-        snprintf(sig, sn,
-                 "st=%s pw=%ldW cap=%ld bt=%d usb=%ld imax=%s type=%s cool=%ld vooc=%ld tech=%ld scr=%d",
-                 st, pwk, cap < 0 ? 0 : cap / 5 * 5, bt < 0 ? 0 : bt / 2 * 2,
-                 vusb > 0 ? (vusb + 500000) / 1000000 : -1, b2, type[0] ? type : "?", cool, vooc, tech,
-                 g_screen_on);
     }
 }
 
@@ -1886,7 +1978,6 @@ static int screen_sample(void)
         if (read_int(g_fb_path, &v) == 0) return v == 0 ? 1 : 0;
     } else if (g_fb_tries < 8) {
         static const char *fb_rel[] = {
-            "/sys/graphics/fb0/blank",
             "/sys/class/graphics/fb0/blank",
             "/sys/devices/virtual/graphics/fb0/blank",
             NULL
@@ -2451,7 +2542,7 @@ static void paths_init(void)
             if (star) *star = 0;
         }
     }
-    rp("/sys/graphics/fb0/blank", g_fb, sizeof g_fb);
+    rp("/sys/class/graphics/fb0/blank", g_fb, sizeof g_fb);
     rp("/sys/class/oplus_chg/battery", g_oplus, sizeof g_oplus);
     rp("/proc/shell-temp", g_shellproc, sizeof g_shellproc);
 

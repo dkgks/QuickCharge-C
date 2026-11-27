@@ -643,6 +643,48 @@ has "MTK：候选数 15" "charge nodes=3/15" "$L"
 # 平台判定写在 [env] 里，日志能自己解释这 15 个是怎么来的
 has "MTK：平台判定有依据" "soc=?(mtk)" "$L"
 
+echo "[22] 回归：未插电 vusb 噪声 / dual-cell pb / canoe 平台 / fb 路径"
+setup
+state static 30
+printf 'Discharging\n' >"$ROOT/sys/class/power_supply/battery/status"
+printf '5000000\n'     >"$ROOT/sys/class/power_supply/usb/voltage_max"
+printf '4000\n'        >"$ROOT/sys/class/power_supply/usb/voltage_now"
+out=$(run chg)
+echo "$out" | grep -q 'vusb=0.00V' && ok "qcmon 未插电 µV 噪声不放大" || bad "vusb 错：$out"
+echo "$out" | grep -q 'cells=1'    && ok "qcmon 单芯 cells=1"        || bad "cells 错：$out"
+
+setup
+state static 30
+printf '3900000\n'     >"$ROOT/sys/class/power_supply/battery/voltage_now"
+printf -- '-4000000\n' >"$ROOT/sys/class/power_supply/battery/current_now"
+printf '1,2,0\n'       >"$ROOT/sys/class/oplus_chg/battery/aging_ffc_data"
+out=$(run chg)
+echo "$out" | grep -q 'cells=2'  && ok "qcmon dual cells=2" || bad "cells 错：$out"
+echo "$out" | grep -q 'pb=31.2W' && ok "qcmon 双电芯 pb 折算" || bad "pb 错：$out"
+
+setup
+state static 30
+sed -i 's/^log_level=.*/log_level=1/' "$BASE/data/state.conf"
+mkdir -p "$BASE/fakebin"
+cat >"$BASE/fakebin/getprop" <<'EOS'
+#!/bin/sh
+case "$1" in
+  ro.board.platform) echo canoe ;;
+  ro.soc.model)      echo SM8850 ;;
+  *) echo "" ;;
+esac
+EOS
+chmod +x "$BASE/fakebin/getprop"
+_save_path=$PATH
+PATH="$BASE/fakebin:$PATH"
+daemon_start
+sleep 4
+daemon_stop
+PATH=$_save_path
+L="$BASE/data/log.txt"
+has "qcom：识别 canoe/SM8850" "soc=SM8850(qcom)" "$L"
+has "fb 路径正确" "fb=/sys/class/graphics/fb0/blank" "$L"
+
 echo
 echo "结果：通过 $PASS，失败 $FAIL"
 [ "$FAIL" -eq 0 ]
