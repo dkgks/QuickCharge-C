@@ -1,45 +1,16 @@
-# Quick Charge v3.1.15-c
+# Quick Charge v3.1.15-c (Native C)
 
-C 守护版。业务逻辑与 shell 版同源同测试，这一版只有一件事：**让你确定自己跑的是装上的那份代码**。
+基于上游 `XiaohaoQvQ/QuickCharge-C` 构建的 ARM64 原生 C 守护进程版发布包，更新通道 `c`（`versionCode: 3011500`）。
 
-3.1.14 的验收报告带了一份 PLG110 现场日志：装的 3.1.14，跑的是 3.1.11。旧守护在文件被覆盖后
-一直没退，boot 段看到它活着就跳过，3.1.13 与 3.1.14 的修复在这台机器上一条都没生效。
+## 主要变更
 
-## 旧守护让位
+- **新增物理高温断开兜底 (`hot_cutoff`)**：在 `qcmon.c`、`qc.sh`、`action.sh` 与 WebUI 同步支持 `42–55℃` 硬保护阈值及 `3℃` 降温滞回恢复，兼顾快充性能与热安全。
+- **优化拔线状态恢复**：将 `scr.fail` 异常标记改为拔线时自动清理，并保留已校准的 `fcc.norm` 满充参考值。
+- **精简安装流程**：移除 `customize.sh` 刷入弹窗。
+- **ARM64 CI/CD 流水线**：使用 `aarch64-linux-gnu-gcc` 自动交叉编译 `bin/qcmon`，并通过 QEMU `tests/c-test.sh` 与全部单元测试后自动打包发布；更新源指向 `dkgks/QuickCharge-C`。
 
-`sd_pid_is_daemon` 只认「cmdline 里有没有 `service.sh`」，认不出「是不是这一份」。现在
-`service.sh` 在 `exec qcmon` 之前把 `service.sh` / `lib/qc.sh` / `bin/qcmon` 三个文件的
-`md5@mtime` 写进 `run/daemon.ver`，boot 段在「守护已在运行，跳过」之前比一次，不一致就
-TERM 旧进程、清锁、重新拉起：
+## 发布产物
 
-```
-W [daemon] 守护(pid=…)跑的不是磁盘上这份代码：<旧> → <新>，收掉重起
-```
-
-没有 `daemon.ver` 的守护是 3.1.14 或更早起的，同样按旧代码处理。`bin/qcmon` 也算进指纹——
-C 包有只重编二进制的版本，光比脚本会漏。
-
-## 候选表：平台认对后重算，数量与 shell 对齐
-
-`curr_prepare` 只填一次表，`plat_resolve` 却专门设计了「`other` 不缓存、最多试 8 次」。
-两者叠在一起就是空转：第一次填表时若还是 `other`，MTK 那 5 个候选永久拿不到。
-
-- 建表时记 `g_curr_plat`，平台从 `other` 认对就清表重填；
-- `MAXCURR` 从 12 提到 16：13 个候选会被静默截掉最后一个（`mtk-battery`）；
-- 补上 `oplus_chg` 的 virtual 实名路径，候选表变成基础 10 + MTK 5 = 15，与 shell 侧同序同数；
-- 重探周期从每 20 轮改成每 4 轮，与 `service.sh` 的 `cnt % 4` 一致（tick=15s 时是 5 分钟 vs 1 分钟，
-  排查同一件事时两边延迟对不上，很容易误判成版本不同）。
-
-## 零碎
-
-- `ua_norm` 的注释还在讲 3.1.13 就删掉的「2.5A 闸」和「去写 0」，改成讲它真正的作用：
-  不归一的话 4A 会被算成 3mA，功率与判重全错。
-- `customize.sh` 删 `bin/` 前加 `[ -f module.prop ]` 前置，缺文件时不再把 C 包自己的
-  二进制删掉。
-
-## 测试
-
-- c-test **102 项**（x86 现编 + 包内 arm64 二进制 + qemu 双跑）；新增 [21]「MTK 候选表 15 个」
-- 单元 95、仿真 641，与 shell 版同一份用例
-- `preflight --full` 全绿：两仓逐字节比对（`tests/sim/run.sh` 这次进了清单）、
-  `3.1.15-c → 3011500` 反算、7 条新守卫
+- `QuickCharge-v3.1.15-c.zip`：内置 ARM64 `bin/qcmon` 的完整可刷入模块包
+- `update.json`：模块在线更新元数据
+- `RELEASE.md`：本版本更新说明
