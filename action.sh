@@ -104,6 +104,12 @@ sd_do_status() {
     else
         printf '阶梯解锁  关闭（系统按温度分档；unlock on 可解除）\n'
     fi
+    hc=$(sd_state_get hot_cutoff off)
+    if [ "$hc" != off ]; then
+        printf '高温保护  %s℃（真实 ≥%s℃ 撤回伪装，降 3℃ 恢复）\n' "$hc" "$hc"
+    else
+        printf '高温保护  关闭（纯极速，不按温度撤回）\n'
+    fi
     printf '温度哨兵  %s %s℃  [%s]\n' "$sz" "${real:--}" "${src:-未读到}"
     [ "$_sd_screen_ticks" -gt 0 ] || { sd_screen_tick; sd_screen_tick; }
     case "$(sd_scr_state)" in
@@ -214,8 +220,9 @@ sd_do_json() {
     printf '"screen":%s,"screen_mode":"%s","screen_base":%s,' \
         "$([ "$_sd_screen_on" = 0 ] && echo 0 || echo 1)" \
         "$(sd_scr_state)" "$_sbase"
-    printf '"batt_spoof":"%s","batt_real":%s,"unlock":%s,' \
+    printf '"batt_spoof":"%s","hot_cutoff":"%s","batt_real":%s,"unlock":%s,' \
         "$(sd_state_get batt_spoof off)" \
+        "$(sd_state_get hot_cutoff off)" \
         "$(sd_batt_real_v && printf '%s' "$_sd_rv" || printf 'null')" \
         "$([ "$(sd_state_get chg_unlock 0)" = 1 ] && echo true || echo false)"
     printf '"log_level":%s,"tick":%s,"mounted":%s,"daemon":%s,"daemon_age":%s,"boot_count":%s,"safety":%s,' \
@@ -369,6 +376,25 @@ sd_set_batt() {
     return 0
 }
 
+sd_set_cutoff() {
+    local v="$1"
+    case "$v" in
+        off|0)
+            sd_state_set hot_cutoff off
+            sd_info cmd "高温保护 → 关闭"
+            echo "高温保护 -> 关闭（保持纯极速，不按温度撤回）"
+            return 0 ;;
+    esac
+    case "$v" in ''|*[!0-9]*) echo "用法: cutoff off|42-55"; return 1 ;; esac
+    if [ "$v" -lt 42 ] || [ "$v" -gt 55 ]; then
+        echo "高温保护阈值需为 42~55℃ 的整数或 off"
+        return 1
+    fi
+    sd_state_set hot_cutoff "$v"
+    sd_info cmd "高温保护 → ${v}℃"
+    echo "高温保护 -> ${v}℃（真实 ≥${v}℃ 撤回伪装，降至 $((v - 3))℃ 恢复）"
+}
+
 sd_do_logs() {
     local arg="$1" n="${2:-60}"
     case "$arg" in
@@ -501,6 +527,7 @@ case "$1" in
     snap)    sd_chg_snapshot 1; echo "已写入日志：$(sd_chg_line)" ;;
     pscale)  shift; sd_set_pscale "${1:-100}" ;;
     batt)     shift; sd_set_batt "${1:-off}" ;;
+    cutoff)  shift; sd_set_cutoff "${1:-off}" ;;
     unlock)  shift
              case "${1:-}" in
                  on|1)
@@ -598,12 +625,12 @@ esac
 
 _rc=$?
 case "$_CMD" in
-    temp|shell|core|noncore|base|batt|unlock|level|hz|hzguard)
+    temp|shell|core|noncore|base|batt|cutoff|unlock|level|hz|hzguard)
         sd_ensure_daemon >/dev/null 2>&1
         sd_daemon_kick ;;
 esac
 case "$_CMD" in
-    temp|shell|core|noncore|base|batt|unlock|level|hz|hzguard|overrides|\
+    temp|shell|core|noncore|base|batt|cutoff|unlock|level|hz|hzguard|overrides|\
     mount|umount|rebuild|reboot-safe|reset)
         [ "$_rc" = "0" ] && sd_sync_desc ;;
 esac

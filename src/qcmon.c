@@ -71,6 +71,7 @@ typedef struct {
     char hz[8];          /* "off" 或数值 */
     int hz_hard;
     char hz_prev_mcfr[16];
+    int hot_cutoff;      /* 0=off, 42-55 */
 } conf_t;
 
 static conf_t g_c;
@@ -353,6 +354,7 @@ static void conf_load(void)
         else if (!strcmp(k, "hz")) snprintf(g_c.hz, sizeof g_c.hz, "%s", v);
         else if (!strcmp(k, "hz_hard")) g_c.hz_hard = parse_i(v, 0);
         else if (!strcmp(k, "hz_prev_mcfr")) snprintf(g_c.hz_prev_mcfr, sizeof g_c.hz_prev_mcfr, "%s", v);
+        else if (!strcmp(k, "hot_cutoff")) g_c.hot_cutoff = parse_i(v, 0);
     }
     fclose(f);
 
@@ -360,6 +362,7 @@ static void conf_load(void)
     if (g_c.tick < 5 || g_c.tick > 300) g_c.tick = 15;
     if (g_c.shell_temp < 20 || g_c.shell_temp > 33) g_c.shell_temp = 30;
     if (g_c.log_level < 0 || g_c.log_level > 4) g_c.log_level = 1;
+    if (g_c.hot_cutoff && (g_c.hot_cutoff < 42 || g_c.hot_cutoff > 55)) g_c.hot_cutoff = 0;
     if (g_c.temp_mode[0] == 0) snprintf(g_c.temp_mode, sizeof g_c.temp_mode, "off");
     /* dyn 是旧键值，等价 static */
     if (!strcmp(g_c.temp_mode, "dyn")) snprintf(g_c.temp_mode, sizeof g_c.temp_mode, "static");
@@ -1276,6 +1279,11 @@ static void scr_tick(void)
     }
     if (strcmp(st, "Charging")) {
         if (scr_active()) { scr_release(); logged[0] = 0; }
+        if (access(g_scr_fail, F_OK) == 0) {
+            unlink(g_scr_fail);
+            g_scr_fail_at = 0;
+            if (!strcmp(logged, "fail")) logged[0] = 0;
+        }
         return;
     }
 
@@ -2515,6 +2523,59 @@ static int next_tick(void)
     return t;
 }
 
+static int g_hot_cut = 0;
+
+/* 可选高温软件保护（默认 off）：真实温度 ≥ 阈值时临时撤回全部伪装与接管，降 3℃ 恢复 */
+static int hot_cutoff_check(void)
+{
+    if (g_c.hot_cutoff < 42 || g_c.hot_cutoff > 55 || !strcmp(g_c.temp_mode, "off")) {
+        g_hot_cut = 0;
+        return 0;
+    }
+
+    int cur = batt_temp_ps();
+    if (cur < -100) {
+        int si = -1;
+        if (pick_sentinel(&si, NULL) == 0) {
+            int sv = 0;
+            if (sentinel_temp(si, &sv) == 0) cur = sv;
+        }
+    }
+
+    if (!g_hot_cut) {
+        if (cur >= g_c.hot_cutoff) {
+            g_hot_cut = 1;
+            shell_emul(0);
+            g_tl_out[0] = 0;
+            g_tl_lim[0] = 0;
+            if (scr_active()) scr_release();
+            unlock_restore();
+            if (g_batt_sp_on) batt_sp_off();
+            if (g_spoof_ok[SC_CORE] || g_spoof_ok[SC_NONCORE]) {
+                spoof_clear_scope(SC_CORE);
+                spoof_clear_scope(SC_NONCORE);
+                g_core_last = g_nc_last = -1;
+            }
+            if (cur > -100) snprintf(g_tl_real, sizeof g_tl_real, "%d", cur);
+            log_msg("W", "thermal",
+                    "高温保护触发：真实 %d℃ ≥ %d℃，已临时撤回伪装与接管（降至 %d℃ 恢复）",
+                    cur, g_c.hot_cutoff, g_c.hot_cutoff - 3);
+        }
+        return g_hot_cut;
+    }
+
+    if (cur > -100 && cur <= g_c.hot_cutoff - 3) {
+        g_hot_cut = 0;
+        log_msg("I", "thermal", "高温保护解除：真实 %d℃ ≤ %d℃，恢复策略",
+                cur, g_c.hot_cutoff - 3);
+        return 0;
+    }
+    if (cur > -100) snprintf(g_tl_real, sizeof g_tl_real, "%d", cur);
+    g_tl_out[0] = 0;
+    g_tl_lim[0] = 0;
+    return 1;
+}
+
 /* 一轮热路径。返回本轮该睡多久。 */
 static int loop_once(int *mode_changed)
 {
@@ -2554,39 +2615,60 @@ static int loop_once(int *mode_changed)
     batt_status(st, sizeof st);
     int charging = !strcmp(st, "Charging") || !strcmp(st, "Full");
 
-    scr_tick();
+    int hot_cut = hot_cutoff_check();
     cool_tick();
-    unlock_tick();
     chg_snapshot(charging);
-    spoof_pending();
-    batt_sp_guard();
 
-    if (strcmp(g_c.temp_mode, last_mode)) {
-        log_msg("I", "daemon", "温度模式: %s → %s",
-                last_mode[0] ? last_mode : "<无>", g_c.temp_mode);
-        snprintf(last_mode, sizeof last_mode, "%s", g_c.temp_mode);
-        /* 换模式后壳温缓存必须作废，否则新值恰好等于旧值时不写 */
-        shell_emul_reset();
-        if (mode_changed) *mode_changed = 1;
-    }
+    if (!hot_cut) {
+        scr_tick();
+        unlock_tick();
+        spoof_pending();
+        batt_sp_guard();
 
-    if (!strcmp(g_c.temp_mode, "static")) {
-        int out = shell_target();
-        shell_emul(out);
-        apply_core_nc(g_tick_n % 40 == 0);
-    } else if (!strcmp(g_c.temp_mode, "charge")) {
-        if (charging) {
-            charge_tick();
+        if (strcmp(g_c.temp_mode, last_mode)) {
+            log_msg("I", "daemon", "温度模式: %s → %s",
+                    last_mode[0] ? last_mode : "<无>", g_c.temp_mode);
+            snprintf(last_mode, sizeof last_mode, "%s", g_c.temp_mode);
+            /* 换模式后壳温缓存必须作废，否则新值恰好等于旧值时不写 */
+            shell_emul_reset();
+            if (mode_changed) *mode_changed = 1;
+        }
+
+        if (!strcmp(g_c.temp_mode, "static")) {
+            int out = shell_target();
+            shell_emul(out);
             apply_core_nc(g_tick_n % 40 == 0);
+        } else if (!strcmp(g_c.temp_mode, "charge")) {
+            if (charging) {
+                charge_tick();
+                apply_core_nc(g_tick_n % 40 == 0);
+            } else {
+                shell_emul(0);
+                g_tl_out[0] = 0;
+                g_tl_lim[0] = 0;
+                if (g_spoof_ok[SC_CORE] || g_spoof_ok[SC_NONCORE]) {
+                    spoof_clear_scope(SC_CORE);
+                    spoof_clear_scope(SC_NONCORE);
+                    g_core_last = g_nc_last = -1;
+                }
+                int si = -1, sc = 0;
+                if (pick_sentinel(&si, &sc) == 0) {
+                    const char *nm = strrchr(g_z[si].path, '/');
+                    snprintf(g_tl_zone, sizeof g_tl_zone, "%s", nm ? nm + 1 : g_z[si].path);
+                    int cur = 0;
+                    if (sentinel_temp(si, &cur) == 0) snprintf(g_tl_real, sizeof g_tl_real, "%d", cur);
+                }
+            }
         } else {
-            shell_emul(0);
-            g_tl_out[0] = 0;
-            g_tl_lim[0] = 0;
+            /* off：什么都不接管，但遥测要有真实温度 */
             if (g_spoof_ok[SC_CORE] || g_spoof_ok[SC_NONCORE]) {
                 spoof_clear_scope(SC_CORE);
                 spoof_clear_scope(SC_NONCORE);
                 g_core_last = g_nc_last = -1;
             }
+            shell_emul(0);
+            g_tl_out[0] = 0;
+            g_tl_lim[0] = 0;
             int si = -1, sc = 0;
             if (pick_sentinel(&si, &sc) == 0) {
                 const char *nm = strrchr(g_z[si].path, '/');
@@ -2594,23 +2676,6 @@ static int loop_once(int *mode_changed)
                 int cur = 0;
                 if (sentinel_temp(si, &cur) == 0) snprintf(g_tl_real, sizeof g_tl_real, "%d", cur);
             }
-        }
-    } else {
-        /* off：什么都不接管，但遥测要有真实温度 */
-        if (g_spoof_ok[SC_CORE] || g_spoof_ok[SC_NONCORE]) {
-            spoof_clear_scope(SC_CORE);
-            spoof_clear_scope(SC_NONCORE);
-            g_core_last = g_nc_last = -1;
-        }
-        shell_emul(0);
-        g_tl_out[0] = 0;
-        g_tl_lim[0] = 0;
-        int si = -1, sc = 0;
-        if (pick_sentinel(&si, &sc) == 0) {
-            const char *nm = strrchr(g_z[si].path, '/');
-            snprintf(g_tl_zone, sizeof g_tl_zone, "%s", nm ? nm + 1 : g_z[si].path);
-            int cur = 0;
-            if (sentinel_temp(si, &cur) == 0) snprintf(g_tl_real, sizeof g_tl_real, "%d", cur);
         }
     }
 

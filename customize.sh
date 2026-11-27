@@ -102,7 +102,8 @@ off_manual=0
 overrides_off=0
 overrides_manual=0
 log_level=1
-tick=15"
+tick=15
+hot_cutoff=off"
 
 [ -f "$SD_STATE" ] || : >"$SD_STATE"
 OLD_IFS=$IFS
@@ -239,12 +240,4 @@ else
     ui_print "- 覆盖  $n 个配置（bind mount）"
 fi
 ui_print "- 温控  $tm_text"
-ui_print "- 反馈  QQ 群（浏览器自动打开）"
 ui_print "- 完成，重启后生效"
-sd_dbg install "QQ群 $SD_QQ_URL"
-
-if command -v am >/dev/null 2>&1; then
-    ( am start -a android.intent.action.VIEW \
-        -d "$SD_QQ_URL" >/dev/null 2>&1 ) &
-    sleep 1
-fi

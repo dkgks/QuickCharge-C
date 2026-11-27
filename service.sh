@@ -198,60 +198,68 @@ sd_daemon() {
         _sd_chg=0
         sd_batt_status_v
         case "$_sd_rv" in Charging|Full) _sd_chg=1 ;; esac
-        sd_scr_tick
-        sd_cool_tick
-        sd_unlock_tick
-        sd_chg_snapshot "$_sd_chg"
 
-        sd_spoof_pending
-        sd_batt_sp_guard
-
-        mode=$_st_temp_mode
-        if [ "$mode" != "$last_mode" ]; then
-            sd_info daemon "温度模式: ${last_mode:-<无>} → $mode"
-            last_mode=$mode
-            _sd_emul_last=""
-            sd_sync_desc
-        fi
-
-        [ $((cnt % 12)) -eq 3 ] && sd_sync_desc
-
-        case "$mode" in
-            static)
-                sd_shell_target >/dev/null
-                sd_shell_emul "$_sd_last_out"
-                if [ "$_sd_last_out" != "$_log_out" ]; then
-                    sd_info daemon "伪装 上报=${_sd_last_out:-0}℃（恒定）"
-                    _log_out=$_sd_last_out
-                    _log_cnt=0
-                else
-                    _log_cnt=$((_log_cnt + 1))
-                    if [ "$_log_cnt" -ge 60 ]; then
-                        sd_info daemon "摘要 上报=${_sd_last_out:-0}℃（恒定）"
-                        _log_cnt=0
-                    fi
-                fi
-                ;;
-            charge)
-                sd_charge_tick
-                ;;
-            off)
-                sd_shell_emul 0
-                _sd_last_out=0
-                ;;
-        esac
-
-        if [ "$mode" = static ] || { [ "$mode" = charge ] && [ "$_sd_chg" = 1 ]; }; then
-            if [ "$_sd_sp_cleared" = 1 ]; then
-                _sd_sp_cleared=0
-                sd_valid_temp "${_st_core_temp:-}" && sd_spoof_apply core "$_st_core_temp" >/dev/null 2>&1
-                sd_valid_temp "${_st_noncore_temp:-}" && sd_spoof_apply noncore "$_st_noncore_temp" >/dev/null 2>&1
-            fi
+        if sd_hot_cutoff_chk; then
+            sd_cool_tick
+            sd_chg_snapshot "$_sd_chg"
+            _sd_sp_cleared=1
+            _sd_last_out=0
         else
-            if [ "$_sd_sp_cleared" != 1 ]; then
-                _sd_sp_cleared=1
-                [ -n "${_st_core_temp:-}" ] && [ "$_st_core_temp" != off ] && sd_spoof_clear_scope core
-                [ -n "${_st_noncore_temp:-}" ] && [ "$_st_noncore_temp" != off ] && sd_spoof_clear_scope noncore
+            sd_scr_tick
+            sd_cool_tick
+            sd_unlock_tick
+            sd_chg_snapshot "$_sd_chg"
+
+            sd_spoof_pending
+            sd_batt_sp_guard
+
+            mode=$_st_temp_mode
+            if [ "$mode" != "$last_mode" ]; then
+                sd_info daemon "温度模式: ${last_mode:-<无>} → $mode"
+                last_mode=$mode
+                _sd_emul_last=""
+                sd_sync_desc
+            fi
+
+            [ $((cnt % 12)) -eq 3 ] && sd_sync_desc
+
+            case "$mode" in
+                static)
+                    sd_shell_target >/dev/null
+                    sd_shell_emul "$_sd_last_out"
+                    if [ "$_sd_last_out" != "$_log_out" ]; then
+                        sd_info daemon "伪装 上报=${_sd_last_out:-0}℃（恒定）"
+                        _log_out=$_sd_last_out
+                        _log_cnt=0
+                    else
+                        _log_cnt=$((_log_cnt + 1))
+                        if [ "$_log_cnt" -ge 60 ]; then
+                            sd_info daemon "摘要 上报=${_sd_last_out:-0}℃（恒定）"
+                            _log_cnt=0
+                        fi
+                    fi
+                    ;;
+                charge)
+                    sd_charge_tick
+                    ;;
+                off)
+                    sd_shell_emul 0
+                    _sd_last_out=0
+                    ;;
+            esac
+
+            if [ "$mode" = static ] || { [ "$mode" = charge ] && [ "$_sd_chg" = 1 ]; }; then
+                if [ "$_sd_sp_cleared" = 1 ]; then
+                    _sd_sp_cleared=0
+                    sd_valid_temp "${_st_core_temp:-}" && sd_spoof_apply core "$_st_core_temp" >/dev/null 2>&1
+                    sd_valid_temp "${_st_noncore_temp:-}" && sd_spoof_apply noncore "$_st_noncore_temp" >/dev/null 2>&1
+                fi
+            else
+                if [ "$_sd_sp_cleared" != 1 ]; then
+                    _sd_sp_cleared=1
+                    [ -n "${_st_core_temp:-}" ] && [ "$_st_core_temp" != off ] && sd_spoof_clear_scope core
+                    [ -n "${_st_noncore_temp:-}" ] && [ "$_st_noncore_temp" != off ] && sd_spoof_clear_scope noncore
+                fi
             fi
         fi
 

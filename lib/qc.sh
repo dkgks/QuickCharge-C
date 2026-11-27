@@ -569,7 +569,7 @@ sd_state_load() {
     _st_curve_offset=""
     _st_log_level=""; _st_tick=""; _st_defrev=""
     _st_hz=""; _st_hz_prev_peak=""; _st_hz_prev_min=""; _st_hz_hard=""; _st_hz_prev_mcfr=""; _st_power_scale=""
-    _st_cells_mode=""; _st_batt_spoof=""
+    _st_cells_mode=""; _st_batt_spoof=""; _st_hot_cutoff=""
     [ -f "$SD_STATE" ] || { _st_log_level=1; _sd_lv=1; return 0; }
     local k v
     while IFS='=' read -r k v; do
@@ -603,6 +603,7 @@ sd_state_get() {
         power_scale)    printf '%s' "${_st_power_scale:-${2:-100}}" ;;
         cells_mode)     printf '%s' "${_st_cells_mode:-${2:-auto}}" ;;
         batt_spoof)     printf '%s' "${_st_batt_spoof:-${2:-off}}" ;;
+        hot_cutoff)     printf '%s' "${_st_hot_cutoff:-${2:-off}}" ;;
         chg_unlock)     printf '%s' "${_st_chg_unlock:-${2:-0}}" ;;
         shell_temp_manual) printf '%s' "${_st_shell_temp_manual:-${2:-0}}" ;;
         overrides_off)  printf '%s' "${_st_overrides_off:-${2:-0}}" ;;
@@ -1806,6 +1807,45 @@ sd_batt_sp_guard() {
     return 0
 }
 
+_sd_hot_cut=0
+
+sd_hot_cutoff_chk() {
+    local lim real=""
+    [ "$(sd_state_get temp_mode off)" = off ] && { _sd_hot_cut=0; return 1; }
+    lim=$(sd_state_get hot_cutoff off)
+    case "$lim" in ''|off|*[!0-9]*) _sd_hot_cut=0; return 1 ;; esac
+    [ "$lim" -ge 42 ] && [ "$lim" -le 55 ] || { _sd_hot_cut=0; return 1; }
+
+    sd_batt_real_v && real=$_sd_rv
+    if [ -z "$real" ] && sd_pick_sentinel_v; then
+        sd_sentinel_temp_v "$_sd_rv" && real=$_sd_rv
+    fi
+
+    if [ "$_sd_hot_cut" != 1 ]; then
+        if [ -n "$real" ] && [ "$real" -ge "$lim" ]; then
+            _sd_hot_cut=1
+            sd_shell_emul 0
+            sd_scr_release
+            sd_unlock_restore
+            sd_spoof_batt_off
+            [ -n "${_st_core_temp:-}" ] && [ "$_st_core_temp" != off ] && sd_spoof_clear_scope core
+            [ -n "${_st_noncore_temp:-}" ] && [ "$_st_noncore_temp" != off ] && sd_spoof_clear_scope noncore
+            _sd_last_out=0
+            sd_warn thermal "高温保护触发：真实 ${real}℃ ≥ ${lim}℃，已临时撤回伪装与接管（降至 $((lim - 3))℃ 恢复）"
+            return 0
+        fi
+        return 1
+    fi
+
+    if [ -n "$real" ] && [ "$real" -le $((lim - 3)) ]; then
+        _sd_hot_cut=0
+        sd_info thermal "高温保护解除：真实 ${real}℃ ≤ $((lim - 3))℃，恢复策略"
+        return 1
+    fi
+    _sd_last_out=0
+    return 0
+}
+
 sd_spoof_request() {
     [ -d "$SD_RUN" ] || mkdir -p "$SD_RUN" 2>/dev/null
     : >"$SD_SPOOF_FLAG" 2>/dev/null
@@ -2804,6 +2844,11 @@ sd_scr_tick() {
             if sd_scr_active; then sd_scr_release; _sd_scr_log=""; fi
             return 0 ;;
         *) if sd_scr_active; then sd_scr_release; _sd_scr_log=""; fi
+           if [ -f "$SD_SCR_FAIL" ]; then
+               rm -f "$SD_SCR_FAIL" 2>/dev/null
+               _sd_scr_fail_at=0
+               [ "$_sd_scr_log" = fail ] && _sd_scr_log=""
+           fi
            return 0 ;;
     esac
 

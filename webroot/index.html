@@ -203,6 +203,13 @@
   <div class="rw"><input type="range" id="shell" min="20" max="33" step="1"></div>
   <div class="switch" id="shellHint">恒定上报这个值：不设温度墙、不设熔断线、不按电量退出</div>
 
+  <div class="row" style="margin-top:20px"><label for="hotCut">高温安全保护</label><span class="val" id="hotCutV">—</span></div>
+  <div class="rw"><input type="range" id="hotCut" min="42" max="55" step="1" value="48"></div>
+  <div class="switch" style="margin-top:2px">
+    <input type="checkbox" id="hotCutOff"><label for="hotCutOff">关闭高温保护（保持纯极速，不自动撤伪装）</label>
+  </div>
+  <div class="switch" id="hotCutHint" style="margin-top:2px">默认关闭；开启后真实温度达到阈值会自动撤回伪装与接管，降 3℃ 恢复</div>
+
   <div class="switch" style="margin-top:16px">插着电就一直写，充到 100% 也不交还。20℃ 是平台判 NTC 开路的下限，再低反而锁 5V。</div>
   </div></div>
 </div>
@@ -668,6 +675,15 @@
       $("shellV").textContent = d.shell_temp + "℃";
     }
     $("shellHint").textContent = "恒定上报这个值：不设温度墙、不设熔断线、不按电量退出";
+    var hc = (d.hot_cutoff && d.hot_cutoff !== "off") ? Number(d.hot_cutoff) : 0;
+    if (rngPush("hotCut", hc > 0 ? hc : 48)) {
+      $("hotCutV").textContent = hc > 0 ? hc + "℃" : "关";
+    }
+    $("hotCutOff").checked = !(hc > 0);
+    $("hotCut").disabled = !(hc > 0);
+    $("hotCutHint").textContent = hc > 0
+      ? "真实 ≥" + hc + "℃ 时临时撤回伪装与接管，降至 " + (hc - 3) + "℃ 自动恢复"
+      : "默认关闭；开启后真实温度达到阈值会自动撤回伪装与接管，降 3℃ 恢复";
     var bsp = (d.batt_spoof && d.batt_spoof !== "off") ? Number(d.batt_spoof) : 0;
     if (rngPush("battSp", bsp > 0 ? bsp : 30)) {
       $("battSpV").textContent = bsp > 0 ? bsp + "℃" : "关";
@@ -718,7 +734,8 @@
     var ht = hzText(d);
     $("hzHint").textContent = ht;
     $("hzHint").style.display = ht ? "" : "none";
-    $("sumMain").textContent = "恒定 " + d.shell_temp + "℃ · 不看真实温度";
+    $("sumMain").textContent = "恒定 " + d.shell_temp + "℃" +
+      (hc > 0 ? " · 保护 " + hc + "℃" : " · 不看真实温度");
   }
   function hzParse(v) {
     var a = [], p = String(v || "").split(/[ ,]+/), i, n;
@@ -1110,6 +1127,17 @@
     });
     bindRange("shell", "shellV", function (v) { return v + "℃"; },
       function (v) { return "base " + v; });
+    bindRange("hotCut", "hotCutV", function (v) { return v + "℃"; },
+      function (v) { return "cutoff " + v; });
+    $("hotCutOff").addEventListener("change", function () {
+      var off = this.checked;
+      $("hotCut").disabled = off;
+      if (off) {
+        apply("cutoff off", "高温保护已关闭");
+      } else {
+        apply("cutoff " + $("hotCut").value, "高温保护 -> " + $("hotCut").value + "℃");
+      }
+    });
     bindRange("coreT", "cpuNow", function (v) { return "上报 " + v + "℃"; },
       function (v) { return "core " + v; });
     $("coreOff").addEventListener("change", function () {
