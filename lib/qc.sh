@@ -116,6 +116,10 @@ sd_code_ver() {
 
 _sd_uptime() {
     local u="" rest=""
+    case "${SD_UPTIME:-}" in
+        ''|*[!0-9]*) ;;
+        *) _sd_rv=$SD_UPTIME; return 0 ;;
+    esac
     read -r u rest 2>/dev/null </proc/uptime || u=""
     case "$u" in
         ''|*[!0-9.]*)

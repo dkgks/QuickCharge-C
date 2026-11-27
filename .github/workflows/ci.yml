@@ -17,7 +17,7 @@ jobs:
       - name: Install arm64 cross-compiler and QEMU
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends gcc-aarch64-linux-gnu zip
+          sudo apt-get install -y gcc-aarch64-linux-gnu libc6-dev-arm64-cross zip
           sudo apt-get install -y --no-install-recommends qemu-user-static || \
             sudo apt-get install -y --no-install-recommends qemu-user qemu-user-binfmt
 

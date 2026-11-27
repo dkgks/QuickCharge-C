@@ -11,7 +11,13 @@ chk() { if [ "$2" = "$3" ]; then ok "$1"; else bad "$1（期望 $3，实际 $2�
 MOD=$(cd "$(dirname "$0")/.." && pwd)
 MU=/data/adb/modules_update/quickcharge
 
-up() { u=$(cut -d. -f1 /proc/uptime 2>/dev/null); case "$u" in ''|*[!0-9]*) u=100 ;; esac; printf '%s' "$u"; }
+up() {
+    if [ -n "${SD_UPTIME:-}" ]; then printf '%s' "$SD_UPTIME"; return 0; fi
+    u=$(cut -d. -f1 /proc/uptime 2>/dev/null)
+    case "$u" in ''|*[!0-9]*) u=100 ;; esac
+    printf '%s' "$u"
+}
+[ "$(up)" -lt 400 ] && export SD_UPTIME=1000
 
 setup() {
     stop_daemon
