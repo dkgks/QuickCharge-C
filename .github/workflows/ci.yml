@@ -17,8 +17,9 @@ jobs:
       - name: Install arm64 cross-compiler and QEMU
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            gcc-aarch64-linux-gnu qemu-user-static zip
+          sudo apt-get install -y --no-install-recommends gcc-aarch64-linux-gnu zip
+          sudo apt-get install -y --no-install-recommends qemu-user-static || \
+            sudo apt-get install -y --no-install-recommends qemu-user qemu-user-binfmt
 
       - name: Lint shell scripts and WebUI JS
         run: |
@@ -45,8 +46,9 @@ jobs:
       - name: Build arm64 qcmon and run c-test
         run: |
           sh build-qcmon.sh arm64 /tmp/qcmon-arm64
-          /tmp/qcmon-arm64 -v || qemu-aarch64-static /tmp/qcmon-arm64 -v
-          sudo sh tests/c-test.sh "qemu-aarch64-static /tmp/qcmon-arm64"
+          QEMU=$(command -v qemu-aarch64-static || command -v qemu-aarch64)
+          "$QEMU" /tmp/qcmon-arm64 -v
+          sudo sh tests/c-test.sh "$QEMU /tmp/qcmon-arm64"
           mkdir -p bin
           cp -f /tmp/qcmon-arm64 bin/qcmon
           chmod 755 bin/qcmon
