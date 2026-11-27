@@ -310,6 +310,7 @@ sd_wait_boot 60 || { sd_warn boot "boot_completed 未在 60s 内就绪，退出"
 [ "$(getprop sys.boot_completed)" = "1" ] || exit 0
 
 printf '0\n' 2>/dev/null >"$SD_DATA/boot.count"
+printf '%s\n' "$MODDIR" 2>/dev/null >"$SD_DATA/moddir"
 
 if ! sd_mounts_alive; then
     sd_info boot "覆盖层未生效，补充挂载"

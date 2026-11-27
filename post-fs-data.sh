@@ -23,6 +23,7 @@ export SD_PHASE=post-fs-data
 sd_log_reset
 rm -f "$SD_RUN/hb" "$SD_RUN/sensor" 2>/dev/null
 sd_state_load
+printf '%s\n' "$MODDIR" 2>/dev/null >"$SD_DATA/moddir"
 if [ -d "$SD_RUN/daemon.lock" ] || [ -f "$SD_RUN/daemon.pid" ]; then
     if sd_stale_clean; then
         echo "QC: 清理上一轮残留的守护锁(旧 pid=${_sd_stale_pid:-?})" >&2

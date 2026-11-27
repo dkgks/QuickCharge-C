@@ -108,7 +108,9 @@ static int g_screen_on = 1;
 static int g_screen_n = 0;
 static char g_bl_list[16][MAXPATH];
 static int g_bl_cnt = -1;
-static int g_fb_blank = -1;
+static int g_bl_tries = 0;
+static char g_fb_path[MAXPATH] = "";
+static int g_fb_tries = 0;
 
 static char g_plat[8] = "";
 static int g_tick_n = 0;
@@ -366,7 +368,23 @@ static void conf_load(void)
 /* 只改一行，其余保留。用于 batt_spoof 自行关闭等场景 */
 static int state_set(const char *k, const char *v)
 {
-    char buf[8192], out[8192], tmp[340];
+    char buf[8192], out[8192], tmp[340], lk[320];
+    int locked = 0, rc = -1;
+    snprintf(lk, sizeof lk, "%s/.state.lock", g_data);
+    for (int i = 0; i <= 100; i++) {
+        if (mkdir(lk, 0755) == 0) { locked = 1; break; }
+        if (errno != EEXIST) break;
+        if (i == 100) {
+            rmdir(lk);
+            if (mkdir(lk, 0755) == 0) locked = 1;
+            break;
+        }
+        if (i % 10 == 9) {
+            struct timespec ts = { 0, 10000000L };
+            nanosleep(&ts, NULL);
+        }
+    }
+
     int fd = open(g_state, O_RDONLY | O_CLOEXEC);
     ssize_t r = 0;
     if (fd >= 0) {
@@ -390,11 +408,11 @@ static int state_set(const char *k, const char *v)
         int w = (kl < len && !strcmp(tmpk, k));
         if (w) {
             int n = snprintf(out + o, sizeof out - o, "%s=%s\n", k, v);
-            if (n < 0 || (size_t)n >= sizeof out - o) return -1;
+            if (n < 0 || (size_t)n >= sizeof out - o) goto done;
             o += (size_t)n;
             found = 1;
         } else {
-            if (len >= sizeof out - o) return -1;
+            if (len >= sizeof out - o) goto done;
             memcpy(out + o, p, len);
             o += len;
         }
@@ -403,15 +421,18 @@ static int state_set(const char *k, const char *v)
     }
     if (!found) {
         int n = snprintf(out + o, sizeof out - o, "%s=%s\n", k, v);
-        if (n < 0 || (size_t)n >= sizeof out - o) return -1;
+        if (n < 0 || (size_t)n >= sizeof out - o) goto done;
         o += (size_t)n;
     }
     out[o] = 0;
 
     snprintf(tmp, sizeof tmp, "%s.t.%d", g_state, (int)getpid());
-    if (write_str(tmp, out) < 0) return -1;
-    if (rename(tmp, g_state) < 0) { unlink(tmp); return -1; }
-    return 0;
+    if (write_str(tmp, out) < 0) goto done;
+    if (rename(tmp, g_state) < 0) { unlink(tmp); goto done; }
+    rc = 0;
+done:
+    if (locked) rmdir(lk);
+    return rc;
 }
 
 /* ------------------------------------------------------------------ 温区 */
@@ -1497,6 +1518,7 @@ static char g_chg_key[384];
 static char g_chg_last_st[24];
 static long g_chg_at;
 static long g_chg_scan;
+static int g_chg_last_chg = -1;
 
 static int path_num(const char *path, long *out)
 {
@@ -1764,8 +1786,9 @@ static void chg_snapshot(int charging)
     /* 1 级是「事件」：插电/停充/每 10 分钟的快照本来就属于事件，锁在 2 级
      * 等于用户默认配置下日志里完全没有功率（3.1.13 的 PLG110 那份 [chg] 为 0）。 */
     if (g_c.log_level < 1) return;
-    /* 没充电时降频，省得空跑读一堆节点 */
-    if (!charging && now - g_chg_scan < 30) return;
+    /* 没充电时降频，但插拔状态变化（如刚拔线）必须立即记录 */
+    if (charging == g_chg_last_chg && !charging && now - g_chg_scan < 30) return;
+    g_chg_last_chg = charging;
     g_chg_scan = now;
 
     batt_status(st, sizeof st);
@@ -1804,7 +1827,9 @@ static void screen_scan(void)
     int n = 0;
     char p[MAXPATH];
 
-    if (g_bl_cnt >= 0) return;
+    if (g_bl_cnt > 0) return;
+    if (g_bl_cnt == 0 && g_bl_tries >= 8) return;
+    g_bl_tries++;
     if ((d = opendir(g_bl))) {
         while ((de = readdir(d)) && n < 16) {
             if (de->d_name[0] == '.') continue;
@@ -1849,8 +1874,9 @@ static int screen_sample(void)
         if (x > max) max = x;
     }
     if (max >= 0) return max > 0 ? 1 : 0;
-    if (g_fb_blank >= 0) return g_fb_blank;   /* blank 文件里 0 才是亮 */
-    {
+    if (g_fb_path[0]) {
+        if (read_int(g_fb_path, &v) == 0) return v == 0 ? 1 : 0;
+    } else if (g_fb_tries < 8) {
         static const char *fb_rel[] = {
             "/sys/graphics/fb0/blank",
             "/sys/class/graphics/fb0/blank",
@@ -1858,10 +1884,14 @@ static int screen_sample(void)
             NULL
         };
         char q[MAXPATH];
+        g_fb_tries++;
         for (int k = 0; fb_rel[k]; k++) {
             if (k == 0 && g_fb[0]) snprintf(q, sizeof q, "%s", g_fb);
             else snprintf(q, sizeof q, "%s%s", g_sys, fb_rel[k]);
-            if (read_int(q, &v) == 0) { g_fb_blank = v == 0 ? 1 : 0; return g_fb_blank; }
+            if (read_int(q, &v) == 0) {
+                snprintf(g_fb_path, sizeof g_fb_path, "%s", q);
+                return v == 0 ? 1 : 0;
+            }
         }
     }
     return -1;
@@ -2202,11 +2232,12 @@ static int mounts_count(void)
 
 static void desc_build(char *out, size_t n)
 {
-    char gear[32], shape[96];
+    char gear[64], shape[96];
     int mode_static = !strcmp(g_c.temp_mode, "static");
     int mode_charge = !strcmp(g_c.temp_mode, "charge");
 
-    if (mode_static || mode_charge) snprintf(gear, sizeof gear, "温度伪装 %d℃", g_c.shell_temp);
+    if (mode_charge) snprintf(gear, sizeof gear, "温度伪装 %d℃（仅充电）", g_c.shell_temp);
+    else if (mode_static) snprintf(gear, sizeof gear, "温度伪装 %d℃", g_c.shell_temp);
     else snprintf(gear, sizeof gear, "温度伪装关闭");
 
     int hv = hz_want();
@@ -2375,6 +2406,8 @@ static void lock_release(void)
     if (rmdir(g_lock) < 0) { /* 目录里有别的东西就留着 */ }
     snprintf(p, sizeof p, "%s/daemon.pid", g_run);
     unlink(p);
+    snprintf(p, sizeof p, "%s/daemon.ver", g_run);
+    unlink(p);
 }
 
 /* ------------------------------------------------------------------ 恢复 */
@@ -2475,8 +2508,8 @@ static void apply_core_nc(int force)
 static int next_tick(void)
 {
     int t = g_c.tick;
-    if (t > 10 && (g_emul_ok == 1 || g_spoof_ok[SC_BATT] || g_spoof_ok[SC_CORE] ||
-                   g_spoof_ok[SC_NONCORE] || scr_active() ||
+    if (t > 10 && ((g_emul_last > 0 && g_emul_ok == 1) || g_spoof_ok[SC_BATT] ||
+                   g_spoof_ok[SC_CORE] || g_spoof_ok[SC_NONCORE] || scr_active() ||
                    access(g_unlock_orig, F_OK) == 0))
         t = 10;
     return t;
@@ -2547,6 +2580,8 @@ static int loop_once(int *mode_changed)
             apply_core_nc(g_tick_n % 40 == 0);
         } else {
             shell_emul(0);
+            g_tl_out[0] = 0;
+            g_tl_lim[0] = 0;
             if (g_spoof_ok[SC_CORE] || g_spoof_ok[SC_NONCORE]) {
                 spoof_clear_scope(SC_CORE);
                 spoof_clear_scope(SC_NONCORE);
@@ -2568,6 +2603,8 @@ static int loop_once(int *mode_changed)
             g_core_last = g_nc_last = -1;
         }
         shell_emul(0);
+        g_tl_out[0] = 0;
+        g_tl_lim[0] = 0;
         int si = -1, sc = 0;
         if (pick_sentinel(&si, &sc) == 0) {
             const char *nm = strrchr(g_z[si].path, '/');
@@ -2677,7 +2714,9 @@ static void log_env(void)
                 if (access(g_curr_nodes[i], F_OK) != 0) continue;
                 const char *pp = g_curr_nodes[i];
                 if (sl && !strncmp(pp, g_sys, sl)) pp += sl;
-                o += snprintf(hits + o, sizeof hits - o, "%s%s", o ? " " : "", pp);
+                int n = snprintf(hits + o, sizeof hits - o, "%s%s", o ? " " : "", pp);
+                if (n < 0 || (size_t)n >= sizeof hits - o) break;
+                o += (size_t)n;
             }
             if (o) log_msg("I", "env", "charge nodes 命中=%s", hits);
         }

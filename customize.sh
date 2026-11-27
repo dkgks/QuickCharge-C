@@ -216,7 +216,8 @@ if [ -f "$MODPATH/module.prop" ] &&
     rm -rf "$MODPATH/bin" 2>/dev/null
 fi
 
-printf '%s\n' "$MODDIR" 2>/dev/null >"$SD_DATA/moddir"
+_mod_final=$(printf '%s' "$MODDIR" | sed 's#/modules_update/#/modules/#')
+printf '%s\n' "$_mod_final" 2>/dev/null >"$SD_DATA/moddir"
 
 for m in /data/adb/modules/*; do
     [ -f "$m/module.prop" ] || continue
