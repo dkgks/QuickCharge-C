@@ -683,7 +683,7 @@ daemon_stop
 PATH=$_save_path
 L="$BASE/data/log.txt"
 has "qcom：识别 canoe/SM8850" "soc=SM8850(qcom)" "$L"
-has "fb 路径正确" "fb=/sys/class/graphics/fb0/blank" "$L"
+has "fb 路径正确" "fb=$ROOT/sys/class/graphics/fb0/blank" "$L"
 
 echo
 echo "结果：通过 $PASS，失败 $FAIL"
