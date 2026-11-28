@@ -617,6 +617,25 @@ has "记下命中的节点名" "charge nodes 命中=" "$L"
 has "命中清单带路径（battery/... 与 usb/... 分得开）" \
     "命中=/sys/class/power_supply/battery/constant_charge_current_max" "$L"
 has "cool_down 记了值与路径" "cool_down=7（" "$L"
+has "env 覆盖层状态带 nm 字段" "nm=bind alive=" "$L"
+
+echo "[20b] 元模块（NoMount）：nm=nomount 且不误报未生效"
+setup
+state static 30
+sed -i 's/^log_level=.*/log_level=1/' "$BASE/data/state.conf"
+mkdir -p "$BASE/adb/modules/meta-nomount" "$BASE/mod/system" "$BASE/mod/files/vendor/etc"
+printf 'x\n' >"$BASE/mod/files/vendor/etc/thermal.xml"
+printf '/vendor/etc/thermal.xml\n' >"$BASE/data/nm.list"
+screen_on
+SD_DATA=$BASE/data SD_SYSROOT=$ROOT SD_MODDIR=$BASE/mod SD_SPOOF_DIR=$BASE/spoof \
+SD_BL=$ROOT/sys/class/backlight SD_ADB=$BASE/adb \
+    $BIN >"$BASE/daemon.out" 2>&1 &
+DPID=$!
+sleep 4
+daemon_stop
+L="$BASE/data/log.txt"
+has "nomount 激活时 env 打 nm=nomount" "nm=nomount" "$L"
+has "nomount 下按 nm.list 判存活（不误报 no）" "nm=nomount alive=yes" "$L"
 
 echo "[21] MTK 候选表：15 个（与 shell 一致，不再被 MAXCURR 截断）"
 setup

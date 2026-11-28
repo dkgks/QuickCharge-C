@@ -5,30 +5,51 @@
 # Fully open source. Commercial use and any unlawful use prohibited.
 # ---------------------------------------------------------------
 
+_QC_DATA="${SD_DATA:-/data/adb/quickcharge}"
+qc_phase() {
+    local _up=""
+    read -r _up _ 2>/dev/null </proc/uptime || _up=""
+    _up=${_up%% *}; _up=${_up%%.*}
+    case "$_up" in ''|*[!0-9]*) _up=0 ;; esac
+    mkdir -p "$_QC_DATA" 2>/dev/null
+    printf 'up=%s at=%s pid=%s step=%s moddir=%s cwd=%s argv0=%s\n' \
+        "$_up" "$(date +%s 2>/dev/null)" "$$" "$1" "${MODDIR:-?}" \
+        "$(pwd 2>/dev/null)" "$0" >"$_QC_DATA/phase.pfs" 2>/dev/null
+    return 0
+}
+
 MODDIR="${SD_MODDIR:-}"
-if [ -z "$MODDIR" ]; then
-    MODDIR=$(cd "${0%/*}" 2>/dev/null && pwd)
-    [ -f "${MODDIR:-/nonexistent}/lib/qc.sh" ] || MODDIR=$(pwd)
+if [ -z "$MODDIR" ] || [ ! -f "$MODDIR/lib/qc.sh" ]; then
+    for _c in \
+        "/data/adb/modules/quickcharge" \
+        "/data/adb/modules_update/quickcharge" \
+        "$(cd "${0%/*}" 2>/dev/null && pwd)" \
+        "$(pwd)"
+    do
+        [ -n "$_c" ] && [ -f "$_c/lib/qc.sh" ] && { MODDIR="$_c"; break; }
+    done
 fi
 [ -f "$MODDIR/lib/qc.sh" ] || {
+    qc_phase no-lib
     echo "QC: 找不到 lib/qc.sh" >&2
-    echo "  当前推导路径: $MODDIR" >&2
+    echo "  当前推导路径: ${MODDIR:-?}" >&2
+    echo "  argv0=$0 cwd=$(pwd 2>/dev/null)" >&2
     exit 1
 }
 
+qc_phase lib
 . "$MODDIR/lib/qc.sh"
+_QC_DATA="$SD_DATA"
 
 export SD_PHASE=post-fs-data
 
+qc_phase boot
 sd_log_reset
 rm -f "$SD_RUN/hb" "$SD_RUN/sensor" 2>/dev/null
 sd_state_load
 printf '%s\n' "$MODDIR" 2>/dev/null >"$SD_DATA/moddir"
 if [ -d "$SD_RUN/daemon.lock" ] || [ -f "$SD_RUN/daemon.pid" ]; then
-    if sd_stale_clean; then
-        echo "QC: 清理上一轮残留的守护锁(旧 pid=${_sd_stale_pid:-?})" >&2
-        sd_info boot "清理上一轮残留的守护锁(旧 pid=${_sd_stale_pid:-?})"
-    fi
+    sd_stale_clean && sd_info boot "清理上一轮残留的守护锁(旧 pid=${_sd_stale_pid:-?})"
 fi
 
 # 3.0.8 删掉了 horae 开关（它只管性能/亮度，与充电无关）。老用户若把它停在 0，
@@ -43,6 +64,7 @@ if [ -f "$SD_STATE" ] && grep -q '^horae=' "$SD_STATE" 2>/dev/null; then
 fi
 sd_boot_mark
 rm -f "$SD_DATA/need_reboot" 2>/dev/null
+qc_phase zones
 sd_zone_scan
 
 cnt=0
@@ -53,6 +75,7 @@ printf '%s\n' "$cnt" 2>/dev/null >"$SD_DATA/boot.count"
 
 if [ "$cnt" -gt 3 ]; then
     : >"$SD_MOUNTS" 2>/dev/null
+    qc_phase safe-mode
     echo "QC: 连续 $cnt 次开机未完成，已跳过挂载（安全模式）" >&2
     exit 0
 fi
@@ -64,6 +87,7 @@ sd_info boot "模块=$MODDIR 覆盖层=$SD_OVERRIDES"
 # 否则每次开机都会多两行「覆盖层为空 → 已关闭」，查日志时像故障。
 if [ "$(sd_state_get overrides_off 0)" = 1 ]; then
     sd_info boot "配置改写已关闭(overrides off)，跳过覆盖层"
+    qc_phase done
     sd_dump_env
     exit 0
 fi
@@ -85,11 +109,13 @@ fi
 if [ "$need" = 1 ]; then
     sd_umount_overrides
     t0=$(date +%s)
+    qc_phase build
     sd_build_overrides
     t1=$(date +%s)
     [ $((t1 - t0)) -gt 10 ] && sd_warn boot "配置生成耗时 $((t1 - t0))s 偏长（本阶段有超时限制）"
 fi
 
+qc_phase mount
 sd_mount_overrides
 
 # 这里不刷描述：本阶段守护还没起来，状态判定只会得出「未运行」，描述会被
@@ -97,5 +123,6 @@ sd_mount_overrides
 
 sd_dump_env
 
+qc_phase done
 sd_info boot "post-fs-data 完成"
 exit 0

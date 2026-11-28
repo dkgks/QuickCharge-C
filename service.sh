@@ -6,13 +6,19 @@
 # ---------------------------------------------------------------
 
 MODDIR="${SD_MODDIR:-}"
-if [ -z "$MODDIR" ]; then
-    MODDIR=$(cd "${0%/*}" 2>/dev/null && pwd)
-    [ -f "${MODDIR:-/nonexistent}/lib/qc.sh" ] || MODDIR=$(pwd)
+if [ -z "$MODDIR" ] || [ ! -f "$MODDIR/lib/qc.sh" ]; then
+    for _c in \
+        "/data/adb/modules/quickcharge" \
+        "/data/adb/modules_update/quickcharge" \
+        "$(cd "${0%/*}" 2>/dev/null && pwd)" \
+        "$(pwd)"
+    do
+        [ -n "$_c" ] && [ -f "$_c/lib/qc.sh" ] && { MODDIR="$_c"; break; }
+    done
 fi
 [ -f "$MODDIR/lib/qc.sh" ] || {
     echo "QC: 找不到 lib/qc.sh" >&2
-    echo "  当前推导路径: $MODDIR" >&2
+    echo "  当前推导路径: ${MODDIR:-?}" >&2
     exit 1
 }
 
@@ -312,6 +318,27 @@ if [ "$1" = "--daemon" ]; then
 fi
 
 sd_session boot "service 阶段启动"
+
+# post-fs-data 这一轮是否跑完：基于单调时钟判断 phase.pfs 是否本次开机写入。
+# done 与 safe-mode 均属于 post-fs-data 明确给出的结论，不推翻安全模式。
+_pfs_state=ok
+if ! qc_phase_fresh "$SD_DATA/phase.pfs"; then
+    _pfs_state=missing
+else
+    _pfs_step=$(sed -n 's/^.*step=\([A-Za-z-]*\).*$/\1/p' "$SD_DATA/phase.pfs" 2>/dev/null | head -1)
+    case "$_pfs_step" in
+        done) ;;
+        safe-mode)
+            _pfs_state=safe
+            sd_warn boot "post-fs-data 按安全模式跳过挂载（连续开机未完成），本次不重建" ;;
+        *)
+            _pfs_state=stuck
+            sd_warn boot "post-fs-data 未完成（停在 ${_pfs_step:-?}）：$(cat "$SD_DATA/phase.pfs" 2>/dev/null)" ;;
+    esac
+fi
+[ "$_pfs_state" = ok ] || [ "$_pfs_state" = safe ] || \
+    sd_warn boot "post-fs-data 本次开机未正常执行（$_pfs_state）：配置改写可能未落地"
+
 sd_dump_env
 
 sd_wait_boot 60 || { sd_warn boot "boot_completed 未在 60s 内就绪，退出"; exit 0; }
@@ -320,9 +347,28 @@ sd_wait_boot 60 || { sd_warn boot "boot_completed 未在 60s 内就绪，退出"
 printf '0\n' 2>/dev/null >"$SD_DATA/boot.count"
 printf '%s\n' "$MODDIR" 2>/dev/null >"$SD_DATA/moddir"
 
-if ! sd_mounts_alive; then
-    sd_info boot "覆盖层未生效，补充挂载"
-    sd_mount_overrides
+if [ "$_pfs_state" = safe ]; then
+    sd_info boot "安全模式：覆盖层维持上次状态，不重建、不补挂"
+elif [ "$(sd_state_get overrides_off 0)" != 1 ]; then
+    if [ "$_pfs_state" = stuck ] || [ "$_pfs_state" = missing ]; then
+        sd_info boot "post-fs-data 未完成（$_pfs_state），走重建 + 补挂兜底"
+        sd_umount_overrides
+        _t0=$(date +%s)
+        sd_build_overrides
+        sd_mount_overrides
+        _t1=$(date +%s)
+        [ $((_t1 - _t0)) -gt 20 ] && sd_warn boot "service 阶段重建耗时 $((_t1 - _t0))s，可能撞上开机超时"
+    else
+        qc_overrides_state_fill
+        case "$_qc_mnt_state" in
+            no)
+                sd_info boot "覆盖层未生效，补充挂载"
+                sd_mount_overrides ;;
+            partial)
+                sd_info boot "覆盖层部分生效（partial ${_qc_mnt_hit}/${_qc_mnt_all}），补充挂载"
+                sd_mount_overrides ;;
+        esac
+    fi
 fi
 
 sd_apply_state

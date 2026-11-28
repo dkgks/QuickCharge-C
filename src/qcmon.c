@@ -945,10 +945,13 @@ static char g_curr_plat[16];    /* 建表时的平台判定；other/空 = 这张
 static void plat_resolve(void)
 {
     /* mtk/qcom 认出来就定死；other 多半是启动早期 getprop 还没就绪，不缓存，
-     * 试满 8 次还是 other 才认命。与 shell 的 sd_plat_resolve 对齐。 */
+     * 与 shell 侧统一给 300 秒时间窗（400 次保护上限）。 */
     static int tries = 0;
+    static time_t t0 = 0;
     if (g_plat[0] && strcmp(g_plat, "other")) return;
-    if (tries >= 8) return;
+    if (!t0) t0 = time(NULL);
+    if (time(NULL) - t0 >= 300) return;
+    if (tries >= 400) return;
     tries++;
     char b[128] = "";
     FILE *p = popen("getprop ro.soc.manufacturer 2>/dev/null", "r");
@@ -972,7 +975,7 @@ static void plat_resolve(void)
              strcasestr(all, "kona") || strcasestr(all, "taro") || strcasestr(all, "kalama") ||
              strcasestr(all, "crow") || strcasestr(all, "pineapple") || strcasestr(all, "sun") ||
              strcasestr(all, "canoe") || strcasestr(all, "cliffs") || strcasestr(all, "volcano") ||
-             strcasestr(all, "lanai"))
+             strcasestr(all, "lanai") || strcasestr(all, "alor"))
         snprintf(g_plat, sizeof g_plat, "qcom");
     else snprintf(g_plat, sizeof g_plat, "other");
 }
@@ -982,9 +985,12 @@ static void curr_prepare(void)
 {
     plat_resolve();
     /* 平台从 other 认对之后要重算：表只填一次，第一次填在启动早期会漏掉 MTK
-     * 那 5 个节点，之后认对也不补 —— 8 次重试等于空转。与 shell 侧一致。 */
+     * 那 5 个节点，之后认对也不补 —— 与 shell 侧一致。 */
     if (g_curr_n && strcmp(g_curr_plat, g_plat) && strcmp(g_plat, "other")) {
-        if (!g_curr_plat[0] || !strcmp(g_curr_plat, "other")) g_curr_n = 0;
+        if (!g_curr_plat[0] || !strcmp(g_curr_plat, "other")) {
+            g_curr_n = 0;
+            log_msg("I", "charge", "平台已认对（%s），候选表按新平台重算", g_plat);
+        }
     }
     if (g_curr_n) return;
     const char *base[] = {
@@ -1980,6 +1986,7 @@ static int screen_sample(void)
         static const char *fb_rel[] = {
             "/sys/class/graphics/fb0/blank",
             "/sys/devices/virtual/graphics/fb0/blank",
+            "/sys/graphics/fb0/blank",
             NULL
         };
         char q[MAXPATH];
@@ -2806,9 +2813,54 @@ static void getprop_v(const char *k, char *out, size_t n)
     pclose(p);
 }
 
-/* 开启日志时一次性把「判断依据」写清：机型/内核/协议/屏幕/FCC。
- * 以前这些只在 daemon 启动时零散记一点，用户复现完导日志，
- * 还得回头问机型、节点、判定值，来回好几轮。 */
+/* 目录下递归统计普通文件数；打不开返回 -1。 */
+static int count_tree(const char *dir)
+{
+    DIR *d = opendir(dir);
+    if (!d) return -1;
+    int n = 0;
+    struct dirent *de;
+    char q[MAXPATH + 260];
+    while ((de = readdir(d))) {
+        struct stat st;
+        if (!strcmp(de->d_name, ".") || !strcmp(de->d_name, "..")) continue;
+        snprintf(q, sizeof q, "%s/%s", dir, de->d_name);
+        if (lstat(q, &st) != 0) continue;
+        if (S_ISDIR(st.st_mode)) {
+            int r = count_tree(q);
+            if (r > 0) n += r;
+        } else if (S_ISREG(st.st_mode)) {
+            n++;
+        }
+    }
+    closedir(d);
+    return n;
+}
+
+/* mountinfo 中 root 字段（第 4 列）以 prefix 开头的挂载条数。 */
+static int count_mounts_under(const char *prefix)
+{
+    const char *mi = getenv("SD_MOUNTINFO");
+    FILE *f = fopen((mi && *mi) ? mi : "/proc/self/mountinfo", "r");
+    if (!f) return -1;
+    char line[1200];
+    int n = 0;
+    size_t pl = strlen(prefix);
+    while (fgets(line, sizeof line, f)) {
+        int col = 0;
+        char *save = NULL;
+        for (char *t = strtok_r(line, " ", &save); t; t = strtok_r(NULL, " ", &save)) {
+            if (++col == 4) {
+                if (!strncmp(t, prefix, pl)) n++;
+                break;
+            }
+        }
+    }
+    fclose(f);
+    return n;
+}
+
+/* 开启日志时一次性把「判断依据」写清：机型/内核/协议/屏幕/FCC。 */
 static void log_env(void)
 {
     char model[64], rom[64], soc[64], kver[64] = "";
@@ -2888,6 +2940,36 @@ static void log_env(void)
         } else {
             log_msg("I", "env", "cool_down=none（本机没有这个节点，不算失败）");
         }
+    }
+
+    /* 覆盖层状态：文件数 / 挂载条数 / 注入方式 / 存活三态 */
+    {
+        char ov[MAXPATH + 16], pre[MAXPATH + 16];
+        int ovn = 0, ovm = 0, nm = nm_or_mm_active();
+        const char *alive_s;
+        if (g_moddir[0]) {
+            snprintf(ov, sizeof ov, "%s/files", g_moddir);
+            ovn = count_tree(ov); if (ovn < 0) ovn = 0;
+            snprintf(pre, sizeof pre, "%s/files/", g_moddir);
+            ovm = count_mounts_under(pre); if (ovm < 0) ovm = 0;
+        }
+        if (nm) {
+            char nl[MAXPATH + 16], nr[MAXPATH + 16];
+            struct stat st;
+            snprintf(nl, sizeof nl, "%s/nm.list", g_data);
+            snprintf(nr, sizeof nr, "%s/system", g_moddir[0] ? g_moddir : "/nonexistent");
+            alive_s = (count_lines(nl) > 0 && stat(nr, &st) == 0 && S_ISDIR(st.st_mode)) ? "yes" : "no";
+        } else if (ovn == 0) {
+            alive_s = "-";
+        } else if (ovm >= ovn) {
+            alive_s = "yes";
+        } else if (ovm > 0) {
+            alive_s = "partial";
+        } else {
+            alive_s = "no";
+        }
+        log_msg("I", "env", "overrides=%d mounts=%d nm=%s alive=%s",
+                ovn, ovm, nm ? "nomount" : "bind", alive_s);
     }
 }
 

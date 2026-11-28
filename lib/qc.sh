@@ -151,6 +151,29 @@ sd_file_mtime() {
     printf '%s' "$t"
 }
 
+# 单调时钟（秒），避免开机后 NTP 对时导致墙钟回跳或前跳误判阶段文件新鲜度。
+qc_up() {
+    _sd_uptime
+    printf '%s' "${_sd_rv:-0}"
+}
+
+qc_phase_fresh() {
+    local f="${1:-$SD_DATA/phase.pfs}" up now
+    [ -f "$f" ] || return 1
+    up=$(sed -n 's/^up=\([0-9]\{1,\}\).*/\1/p' "$f" 2>/dev/null | head -1)
+    [ -n "$up" ] || up=$(sed -n 's/.*[[:space:]]up=\([0-9]\{1,\}\).*/\1/p' "$f" 2>/dev/null | head -1)
+    if [ -z "$up" ]; then
+        now=$(sd_boot_ts)
+        [ "${now:-0}" -gt 0 ] || return 0
+        [ "$(sd_file_mtime "$f")" -ge "$now" ]
+        return $?
+    fi
+    now=$(qc_up)
+    [ "$now" -ge "$up" ] || return 1
+    [ $((now - up)) -le 86400 ] || return 1
+    return 0
+}
+
 sd_log_reset() {
     rm -f "$SD_LOG" "$SD_OLD" 2>/dev/null
     return 0
@@ -263,6 +286,22 @@ sd_dump_env() {
         _sd_emit I env "sentinel=none（未找到电池/主板温度节点，伪装无法工作）"
     fi
     _sd_emit I env "state=$(sd_state_dump)"
+
+    # 覆盖层状态：产物数 / mountinfo 挂载条数 / 注入方式 / 存活三态
+    local _ovn _ovm _ovnm _ovalive _mi="${SD_MOUNTINFO:-/proc/self/mountinfo}"
+    _ovn=$(find "$SD_OVERRIDES" -type f 2>/dev/null | wc -l | tr -d ' ')
+    case "$_ovn" in ''|*[!0-9]*) _ovn=0 ;; esac
+    _ovm=$(awk -v b="$SD_OVERRIDES/" '
+        { i = 0
+          for (k = 1; k <= NF; k++) if ($k == "-") { i = k; break }
+          if (i > 0 && index($4, b) == 1) n++ }
+        END { print n + 0 }' "$_mi" 2>/dev/null)
+    case "$_ovm" in ''|*[!0-9]*) _ovm=0 ;; esac
+    if sd_nm_active || sd_mm_active; then _ovnm=nomount; else _ovnm=bind; fi
+    qc_overrides_state_fill
+    _ovalive=$_qc_mnt_state
+    [ "$_ovn" -eq 0 ] && [ "$_ovnm" = bind ] && _ovalive="-"
+    _sd_emit I env "overrides=$_ovn mounts=$_ovm nm=$_ovnm alive=$_ovalive"
 
     # 下面三行是「一次定位」的关键：协议、屏幕、FCC 三处判定的原始输入。
     # 没有它们，日志里只能看到结论（公有快充 / scr=0 / 写不进去），看不出为什么。
@@ -1039,17 +1078,23 @@ sd_plat_resolve() {
     [ -n "$_sd_curr_nodes" ] || return 0
     [ "$_sd_plat" = other ] && return 0
     case "$_sd_curr_plat" in
-        other|"") _sd_curr_nodes=""; _sd_curr_plat="" ;;
+        other|"")
+            _sd_curr_nodes=""; _sd_curr_plat=""
+            sd_info charge "平台已认对（$_sd_plat ${_sd_plat_why:-}），候选表按新平台重算" ;;
     esac
     return 0
 }
 
 _sd_plat_probe() {
-    # 认出 mtk/qcom 就定死；other 多半是启动早期 getprop 还没就绪，不缓存。
-    # 3.1.12 及以前 `[ -n "$_sd_plat" ]` 把 other 也定死，于是 MTK 那 5 个候选
-    # 节点永远拿不到 —— 这才是真正的"缓存了坏结果"。试满 8 次还是 other 才认命。
+    # 认出 mtk/qcom 就定死；other 多半是启动早期 getprop 还没就绪，不缓存，
+    # 按 300s 时间窗（及 400 次保护上限）重试，避免 1 个 tick 内被耗尽。
     case "$_sd_plat" in mtk|qcom) return 0 ;; esac
-    [ "${_sd_plat_try:-0}" -ge 8 ] && return 0
+    local _now
+    _now=$(date +%s 2>/dev/null)
+    case "$_now" in ''|*[!0-9]*) _now=0 ;; esac
+    [ -n "${_sd_plat_t0:-}" ] || _sd_plat_t0=$_now
+    [ "$_now" -gt 0 ] && [ $((_now - ${_sd_plat_t0:-0})) -ge 300 ] && return 0
+    [ "${_sd_plat_try:-0}" -ge 400 ] && return 0
     _sd_plat_try=$(( ${_sd_plat_try:-0} + 1 ))
     local bp sm hw hwline
     bp=$(getprop ro.board.platform 2>/dev/null)
@@ -1063,7 +1108,7 @@ _sd_plat_probe() {
         *mt[0-9][0-9][0-9][0-9]*|*MT[0-9][0-9][0-9][0-9]*|*MTK*)
             _sd_plat=mtk
             _sd_plat_why="${bp:-$hw}" ;;
-        *qcom*|*sm[0-9][0-9][0-9][0-9]*|*SM[0-9][0-9][0-9][0-9]*|*msm[0-9]*|*MSM[0-9]*|*kona*|*taro*|*kalama*|*crow*|*pineapple*|*canoe*|sun*)
+        *qcom*|*sm[0-9][0-9][0-9][0-9]*|*SM[0-9][0-9][0-9][0-9]*|*msm[0-9]*|*MSM[0-9]*|*kona*|*taro*|*kalama*|*crow*|*pineapple*|*canoe*|*alor*|sun*)
             _sd_plat=qcom
             _sd_plat_why="${bp:-$hw}" ;;
         *)
@@ -2074,6 +2119,12 @@ sd_transform() {
         empty) [ -f "$tmp" ] || { rm -f "$tmp"; return 1; } ;;
     esac
 
+    if cmp -s "$tmp" "$src"; then
+        rm -f "$tmp"
+        sd_warn override "改写无差异: $src（目标值已是期望值，或格式不匹配）"
+        return 3
+    fi
+
     mv -f "$tmp" "$dst" 2>/dev/null || { rm -f "$tmp"; return 1; }
     return 0
 }
@@ -2115,7 +2166,7 @@ sd_override_selftest() {
 }
 
 sd_build_overrides() {
-    local fp base f rel lf ok skip fail
+    local fp base f rel lf ok skip fail same
     fp=$(sd_fingerprint)
 
     # 用户用 `action.sh overrides off` 关掉配置改写时，一个文件也不生成。
@@ -2153,18 +2204,19 @@ sd_build_overrides() {
             -name 'QEGA_Config.txt' -o \
             -name 'charging_*.txt' \
             \) 2>/dev/null >"$lf"
-        ok=0; skip=0; fail=0
+        ok=0; skip=0; fail=0; same=0
         while IFS= read -r f; do
             rel="${f#/}"
             sd_transform "$f" "$SD_OVERRIDES/$rel"
             case $? in
                 0) ok=$((ok + 1)) ;;
                 2) skip=$((skip + 1)) ;;
+                3) same=$((same + 1)) ;;
                 *) fail=$((fail + 1)) ;;
             esac
         done <"$lf"
-        [ $((ok + skip + fail)) -gt 0 ] &&
-            sd_info override "${base#/}: 改写 $ok · 跳过 $skip · 失败 $fail"
+        [ $((ok + skip + same + fail)) -gt 0 ] &&
+            sd_info override "${base#/}: 改写 $ok · 无差异 $same · 跳过 $skip · 失败 $fail"
     done
     rm -f "$lf" 2>/dev/null
 
@@ -2179,8 +2231,8 @@ SD_NM_ROOT="$MODDIR/system"
 SD_NM_LIST="$SD_DATA/nm.list"
 
 sd_nm_active() {
-    local d
-    for d in /data/adb/modules/meta-nomount /data/adb/modules/nomount; do
+    local adb="${SD_ADB:-/data/adb}" d
+    for d in "$adb/modules/meta-nomount" "$adb/modules/nomount"; do
         [ -d "$d" ] || continue
         [ -f "$d/disable" ] && continue
         [ -f "$d/remove" ] && continue
@@ -2189,18 +2241,19 @@ sd_nm_active() {
     return 1
 }
 
-SD_MM_DIRS="/data/adb/modules/meta-hybrid_mount
-/data/adb/modules/hybrid_mount
-/data/adb/modules/meta-magic_mount
-/data/adb/modules/meta-magic_mount-rs
-/data/adb/modules/meta-mm
-/data/adb/modules/magic_mount
-/data/adb/modules/mountify"
+SD_MM_DIRS="/modules/meta-hybrid_mount
+/modules/hybrid_mount
+/modules/meta-magic_mount
+/modules/meta-magic_mount-rs
+/modules/meta-mm
+/modules/magic_mount
+/modules/mountify"
 
 sd_mm_active() {
-    local d
+    local adb="${SD_ADB:-/data/adb}" d
     while IFS= read -r d; do
         [ -n "$d" ] || continue
+        d="$adb$d"
         [ -d "$d" ] || continue
         [ -f "$d/disable" ] && continue
         [ -f "$d/remove" ] && continue
@@ -2222,12 +2275,12 @@ sd_mm_name() {
 }
 
 sd_nm_bin() {
-    local b
+    local adb="${SD_ADB:-/data/adb}" b
     for b in \
-        /data/adb/modules/meta-nomount/bin/arm64-v8a/nomount \
-        /data/adb/modules/meta-nomount/bin/arm64/nomount \
-        /data/adb/modules/nomount/bin/arm64-v8a/nomount \
-        /data/adb/modules/nomount/bin/arm64/nomount
+        "$adb/modules/meta-nomount/bin/arm64-v8a/nomount" \
+        "$adb/modules/meta-nomount/bin/arm64/nomount" \
+        "$adb/modules/nomount/bin/arm64-v8a/nomount" \
+        "$adb/modules/nomount/bin/arm64/nomount"
     do
         [ -x "$b" ] && { _sd_rv=$b; return 0; }
     done
@@ -2404,35 +2457,80 @@ sd_mount_overrides() {
     sd_info mount "配置覆盖已挂载，累计 $n/$total 条"
 }
 
-# 挂载可能发生在别的 mount namespace（KSU 的 su 会话常常如此），
-# /proc/mounts 里看不到逐文件 bind。用一个内容比对兜底：
-# 抽样若干条，改写版与系统里的目标文件完全一致，就说明覆盖真实生效。
-sd_mounts_content_ok() {
-    local rel n=0 ok=0 root="${SD_ROOT:-}"
+# 挂载源（mountinfo 的 root 字段）落在覆盖层目录下，才算「覆盖层真的挂上了」。
+# 不再靠比较文件内容判断存活，避免无差异覆盖层把未挂载藏成「一切正常」。
+sd_mounts_root_ok() {
+    local mi="${SD_MOUNTINFO:-/proc/self/mountinfo}"
     [ -d "$SD_OVERRIDES" ] || return 1
-    while IFS= read -r rel; do
-        [ -n "$rel" ] || continue
-        rel="${rel#/}"
-        [ -f "$SD_OVERRIDES/$rel" ] || continue
-        n=$((n + 1))
-        cmp -s "$SD_OVERRIDES/$rel" "$root/$rel" && ok=$((ok + 1))
-        [ "$n" -ge 5 ] && break
-    done <"$SD_MOUNTS"
-    [ "$n" -gt 0 ] && [ "$ok" -eq "$n" ]
+    [ -r "$mi" ] || return 1
+    awk -v b="$SD_OVERRIDES/" '
+        {
+            i = 0
+            for (k = 1; k <= NF; k++) if ($k == "-") { i = k; break }
+            if (i > 0 && index($4, b) == 1) { f = 1; exit }
+        }
+        END { exit (f ? 0 : 1) }
+    ' "$mi" 2>/dev/null
+}
+
+# 覆盖层三态判定：yes / partial / no。结果写入 _qc_mnt_state/_qc_mnt_hit/_qc_mnt_all/_qc_mnt_why。
+qc_overrides_state_fill() {
+    local pm="${SD_PROC_MOUNTS:-/proc/mounts}"
+    _qc_mnt_state=no; _qc_mnt_hit=0; _qc_mnt_all=0; _qc_mnt_why=""
+    if [ "$(sd_state_get overrides_off 0)" = 1 ]; then
+        _qc_mnt_why="配置改写已关闭"
+        return 1
+    fi
+    if sd_nm_active || sd_mm_active; then
+        if [ -s "$SD_NM_LIST" ] && [ -d "$SD_NM_ROOT" ]; then
+            _qc_mnt_all=$(grep -c . "$SD_NM_LIST" 2>/dev/null)
+            case "$_qc_mnt_all" in ''|*[!0-9]*) _qc_mnt_all=0 ;; esac
+            _qc_mnt_hit=$_qc_mnt_all
+            _qc_mnt_why="元模块接管"
+            _qc_mnt_state=yes
+            return 0
+        fi
+        _qc_mnt_why="元模块已激活，但 nm.list 为空或 $SD_NM_ROOT 不存在"
+        return 1
+    fi
+    [ -s "$SD_MOUNTS" ] || { _qc_mnt_why="mounts.list 为空"; return 1; }
+    _qc_mnt_all=$(grep -c . "$SD_MOUNTS" 2>/dev/null)
+    case "$_qc_mnt_all" in ''|*[!0-9]*) _qc_mnt_all=0 ;; esac
+    _qc_mnt_hit=$(awk 'NR==FNR { if ($0!="") want[$0]=1; next }
+                       ($2 in want) { hit[$2]=1 }
+                       END { c=0; for (k in hit) c++; print c }' \
+                  "$SD_MOUNTS" "$pm" 2>/dev/null)
+    case "$_qc_mnt_hit" in ''|*[!0-9]*) _qc_mnt_hit=0 ;; esac
+    if [ "$_qc_mnt_all" -gt 0 ] && [ "$_qc_mnt_hit" -ge "$_qc_mnt_all" ]; then
+        _qc_mnt_why="全部挂上"
+        _qc_mnt_state=yes
+        return 0
+    fi
+    if [ "$_qc_mnt_hit" -gt 0 ]; then
+        _qc_mnt_why="部分挂载"
+        _qc_mnt_state=partial
+        return 0
+    fi
+    if sd_mounts_root_ok; then
+        _qc_mnt_why="mounts.list 对不上，但 mountinfo 里有本模块的挂载源"
+        _qc_mnt_hit=1
+        _qc_mnt_state=partial
+        return 0
+    fi
+    _qc_mnt_why="没有本模块的挂载"
+    return 1
+}
+
+qc_overrides_state() {
+    qc_overrides_state_fill
+    local rc=$?
+    printf '%s' "$_qc_mnt_state"
+    return "$rc"
 }
 
 sd_mounts_alive() {
-    if sd_nm_active || sd_mm_active; then
-        [ -s "$SD_NM_LIST" ] && [ -d "$SD_NM_ROOT" ] && return 0
-        return 1
-    fi
-    [ -s "$SD_MOUNTS" ] || return 1
-    if awk 'NR==FNR { if ($0!="") want[$0]=1; next }
-            ($2 in want) { hit[$2]=1 }
-            END { exit (length(hit)>0 ? 0 : 1) }' "$SD_MOUNTS" /proc/mounts 2>/dev/null; then
-        return 0
-    fi
-    sd_mounts_content_ok
+    qc_overrides_state_fill >/dev/null
+    [ "$_qc_mnt_state" != no ]
 }
 
 # 扫 /proc/self/mountinfo，把挂载源（root 字段）落在本模块目录下的挂载点全卸掉。
@@ -2926,6 +3024,12 @@ _sd_curr_unit() {
 }
 
 _sd_curr_prepare() {
+    if [ -z "${SD_CURR_NODES:-}" ]; then
+        case "$_sd_plat" in
+            mtk|qcom) ;;
+            *) sd_plat_resolve ;;
+        esac
+    fi
     [ -n "$_sd_curr_nodes" ] && return 0
     if [ -n "${SD_CURR_NODES:-}" ]; then
         _sd_curr_nodes=$(printf '%s' "$SD_CURR_NODES" | tr ',' ' ')
