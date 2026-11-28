@@ -75,7 +75,7 @@
   .hint{font-size:12px;color:var(--dim);margin-top:10px;line-height:1.6}
   .switch input{width:18px;height:18px;accent-color:var(--accent)}
   /* 纯文字提示走 block：flex 容器里的长中文串不收缩，会顶出卡片右边 */
-  #shellHint,#battSpHint,#thermalHint,#coreHint,#hzHint{display:block;line-height:1.55}
+  #shellHint,#hotCutHint,#battSpHint,#thermalHint,#coreHint,#hzHint{display:block;line-height:1.55}
   .acts{display:grid;grid-template-columns:repeat(2,1fr);gap:8px;margin-top:4px}
   .acts.acts3{grid-template-columns:repeat(3,1fr)}
   .acts button{
@@ -161,7 +161,7 @@
 </header>
 
 <div class="banner" id="banner"></div>
-<div class="safety" id="safety">⚠ 安全模式：连续多次开机未完成，本次未挂载配置。可在下方“重挂”退出。</div>
+<div class="safety" id="safety">⚠ 安全模式：多次开机异常，已跳过配置挂载，可点「重挂」恢复。</div>
 
 <div class="card">
   <div class="grid">
@@ -190,7 +190,7 @@
     <button data-mode="charge">仅充电</button>
     <button data-mode="off">关闭</button>
   </div>
-  <div class="hint" id="modeHint">选择改写范围，点一下立即生效</div>
+  <div class="hint" id="modeHint">点击切换，立即生效</div>
 </div>
 
 <div class="card fold closed" id="foldMain">
@@ -201,45 +201,43 @@
   <div class="bd" id="foldMainBd"><div class="bd-in">
   <div class="row" style="margin-top:0"><label for="shell">伪装温度</label><span class="val" id="shellV">—</span></div>
   <div class="rw"><input type="range" id="shell" min="20" max="33" step="1"></div>
-  <div class="switch" id="shellHint">恒定上报这个值：不设温度墙、不设熔断线、不按电量退出</div>
+  <div class="switch" id="shellHint">恒定上报目标壳温（20–33℃，低于 20℃ 易触发 5V 低温保护）</div>
 
   <div class="row" style="margin-top:20px"><label for="hotCut">高温安全保护</label><span class="val" id="hotCutV">—</span></div>
   <div class="rw"><input type="range" id="hotCut" min="42" max="55" step="1" value="48"></div>
   <div class="switch" style="margin-top:2px">
-    <input type="checkbox" id="hotCutOff"><label for="hotCutOff">关闭高温保护（保持纯极速，不自动撤伪装）</label>
+    <input type="checkbox" id="hotCutOff"><label for="hotCutOff">关闭高温保护</label>
   </div>
-  <div class="switch" id="hotCutHint" style="margin-top:2px">默认关闭；开启后真实温度达到阈值会自动撤回伪装与接管，降 3℃ 恢复</div>
-
-  <div class="switch" style="margin-top:16px">插着电就一直写，充到 100% 也不交还。20℃ 是平台判 NTC 开路的下限，再低反而锁 5V。</div>
+  <div class="switch" id="hotCutHint" style="margin-top:2px">开启后超温自动撤回伪装，降 3℃ 恢复</div>
   </div></div>
 </div>
 
 <div class="card fold closed" id="foldExtreme">
   <div class="hd" id="foldExtremeHd" role="button" aria-expanded="false">
-    <h2>极限功率<span class="sm" id="sumExtreme">安全边界未动</span></h2>
+    <h2>极限功率<span class="sm" id="sumExtreme">未开启</span></h2>
     <span class="chev"></span>
   </div>
   <div class="bd" id="foldExtremeBd"><div class="bd-in">
   <div class="hint" style="margin:-2px 0 10px;color:#ff6b35">
-    会突破模块默认守着的安全边界，清楚后果再开。
+    高风险项，可能导致机身过热，请按需开启。
   </div>
 
   <div class="row"><label for="battSp">电池 NTC 上报</label><span class="val" id="battSpV">—</span></div>
   <div class="rw"><input type="range" id="battSp" min="20" max="45" step="1"></div>
   <div class="switch" style="margin-top:2px">
-    <input type="checkbox" id="battSpOff"><label for="battSpOff">关闭电池 NTC 伪装（电池温度保持真实）</label>
+    <input type="checkbox" id="battSpOff"><label for="battSpOff">关闭电池伪装</label>
   </div>
-  <div class="switch" id="battSpHint" style="margin-top:2px">按此值上报；不按真实温度撤销</div>
+  <div class="switch" id="battSpHint" style="margin-top:2px">保持真实电池温度</div>
 
   <div class="row" style="margin-top:22px"><label>CPU 伪装</label><span class="val" id="cpuNow">—</span></div>
   <div class="rw"><input type="range" id="coreT" min="20" max="70" step="1" value="45"></div>
   <div class="switch" style="margin-top:2px">
-    <input type="checkbox" id="coreOff"><label for="coreOff">关闭伪装（交回真实温度）</label>
+    <input type="checkbox" id="coreOff"><label for="coreOff">关闭 CPU 伪装</label>
   </div>
   <div class="switch" id="coreHint" style="margin-top:4px"></div>
 
-  <button id="unlockBtn" class="bigbtn">取消充电阶梯限流</button>
-  <div class="switch" id="thermalHint" style="margin-top:8px">写 0 解除 HAL 限流；不按温度撤销，要还原得手动关</div>
+  <button id="unlockBtn" class="bigbtn">解除充电阶梯限流</button>
+  <div class="switch" id="thermalHint" style="margin-top:8px">解除 HAL 温控降档，原值自动备份</div>
   </div></div>
 </div>
 
@@ -253,7 +251,7 @@
   <div class="rw"><input type="range" id="hz" min="0" max="5" step="1" value="0"></div>
   <div class="ticks" id="hzTicks"><span>关</span><span>90</span><span>120</span><span>144</span><span>165</span><span>185</span></div>
   <div class="switch" style="margin-top:2px">
-    <input type="checkbox" id="hzHard"><label for="hzHard">强制锁定（不接受内容帧率切换）</label>
+    <input type="checkbox" id="hzHard"><label for="hzHard">强制锁定（忽略内容帧率）</label>
   </div>
   <div class="switch" id="hzHint" style="margin-top:4px;display:none"></div>
   </div></div>
@@ -282,8 +280,8 @@
 </div>
 
 <footer>
-  By.Xiaohao · <span class="lnk" id="joinQun" role="link">加入群聊</span> · <span class="lnk" id="followAuthor" role="link">关注作者</span>
-  <div class="lic">源码完全公开 · 禁止商用与非法用途</div>
+  Quick Charge · Fork by dkgks（基于 Xiaohao）
+  <div class="lic">开源免费 · 仅限个人学习测试</div>
 </footer>
 
 <div id="toast"></div>
@@ -312,12 +310,6 @@
   var pwrTimer = null;
   var pwrBusy = false;
   var CAND = ["/data/adb/modules/quickcharge", "/data/adb/modules_update/quickcharge"];
-  var QUN_URL = "https://qun.qq.com/universal-share/share?ac=1&authKey=sxretTuuUbT6DSq6WUsRcAhqpzEtEmLd" +
-    "UgjcJW5EFkih769NPI7mFOtBWBsiLb56&busi_data=eyJncm91cENvZGUiOiIxMDAzNDgxNjYwIiwidG9rZW4" +
-    "iOiJnaGZRMVVNSCtOZFNyWUV4cEk2bU9Jd05neVpwUmVkOTIxV3VpcVRwS2Iram1rNC81TmtnNUJ3MjRxYm9Jc" +
-    "GJEIiwidWluIjoiMjExMTgzNTIyMCJ9&data=Gr9CwynFwy41T0Lgv3epv7_E3bgXVe1lKsqwWOnF338a3I7ve" +
-    "anebrcFNu2aJI8_5AZAHr7NXTdhgkf2iFtq-g&svctype=4&tempid=h5_group_info";
-  var COOLAPK_URL = "https://www.coolapk.com/u/27316679";
   function $(id) { return document.getElementById(id); }
   function bridgeName() {
     if (window.ksu && typeof window.ksu.exec === "function") return "ksu";
@@ -578,20 +570,20 @@
   function hzText(d) {
     if (!d.hz || d.hz === "off") return "";
     switch (d.hz_state) {
-      case "drift":     return "已被系统改回";
-      case "low_power": return "省电模式 · 锁定无效";
+      case "drift":     return "已被系统重置";
+      case "low_power": return "省电模式下失效";
       case "ok":        return hzHard
-        ? "锁定 " + d.hz + "Hz · 定时补写"
-        : d.hz + "Hz · 系统可降频";
+        ? "强锁 " + d.hz + "Hz · 自动补写"
+        : d.hz + "Hz · 允许系统降频";
       default:          return d.hz + "Hz";
     }
   }
   function modeText(d) {
     switch (d.mode) {
-      case "static": return "任何场景都改写";
-      case "charge": return d.charging ? "插电中 · 已接管" : "未插电 · 插电后接管";
-      case "off":    return "不改写 · 读数为真实值";
-      default:       return "选择改写范围";
+      case "static": return "全程伪装";
+      case "charge": return d.charging ? "充电中 · 已接管" : "待机 · 插电后接管";
+      case "off":    return "已关闭 · 保持真实温度";
+      default:       return "点击切换";
     }
   }
   function rewritten(d) {
@@ -657,7 +649,7 @@
     $("daemon").textContent = d.daemon ? "运行" : "停止";
     $("dmSrc").textContent = d.daemon
       ? (d.daemon_age >= 0 ? d.daemon_age + "s 前心跳" : "pid 存活")
-      : "点下面重启";
+      : "点下方重启";
     $("sum").innerHTML = summary(d);
     $("safety").style.display = d.safety ? "block" : "none";
     eachChild($("modeSeg"), function (b) {
@@ -674,7 +666,7 @@
     if (rngPush("shell", d.shell_temp)) {
       $("shellV").textContent = d.shell_temp + "℃";
     }
-    $("shellHint").textContent = "恒定上报这个值：不设温度墙、不设熔断线、不按电量退出";
+    $("shellHint").textContent = "恒定上报目标壳温（20–33℃，低于 20℃ 易触发 5V 低温保护）";
     var hc = (d.hot_cutoff && d.hot_cutoff !== "off") ? Number(d.hot_cutoff) : 0;
     if (rngPush("hotCut", hc > 0 ? hc : 48)) {
       $("hotCutV").textContent = hc > 0 ? hc + "℃" : "关";
@@ -682,8 +674,8 @@
     $("hotCutOff").checked = !(hc > 0);
     $("hotCut").disabled = !(hc > 0);
     $("hotCutHint").textContent = hc > 0
-      ? "真实 ≥" + hc + "℃ 时临时撤回伪装与接管，降至 " + (hc - 3) + "℃ 自动恢复"
-      : "默认关闭；开启后真实温度达到阈值会自动撤回伪装与接管，降 3℃ 恢复";
+      ? "≥" + hc + "℃ 撤回伪装，降至 " + (hc - 3) + "℃ 恢复"
+      : "开启后超温自动撤回伪装，降 3℃ 恢复";
     var bsp = (d.batt_spoof && d.batt_spoof !== "off") ? Number(d.batt_spoof) : 0;
     if (rngPush("battSp", bsp > 0 ? bsp : 30)) {
       $("battSpV").textContent = bsp > 0 ? bsp + "℃" : "关";
@@ -691,32 +683,30 @@
     $("battSpOff").checked = !(bsp > 0);
     $("battSp").disabled = !(bsp > 0);
     $("battSpHint").textContent = bsp > 0
-      ? "系统读到 " + bsp + "℃" +
+      ? "上报 " + bsp + "℃" +
         (d.batt_real !== null && d.batt_real !== undefined
-          ? " · 真实 " + d.batt_real + "℃" : " · 真实温度读不到") +
-        "；不按真实温度撤销，按温区判档的策略会据此重算电流，功率可能跟着抖"
-      : "电池温度保持真实；开启后才改写";
+          ? "（真实 " + d.batt_real + "℃）" : "")
+      : "保持真实电池温度";
     $("unlockBtn").className = d.unlock === true ? "bigbtn on" : "bigbtn";
     $("unlockBtn").textContent = d.unlock === true
-      ? "阶梯限流已解除 · 点击还原"
-      : "取消充电阶梯限流";
+      ? "阶梯限流已解除（点击恢复）"
+      : "解除充电阶梯限流";
     $("thermalHint").textContent = d.unlock === true
-      ? "已解锁：HAL 限流节点写 0；不按温度撤销"
-      : "写 0 解除 HAL 限流；不按温度撤销，要还原得手动关";
+      ? "已清零 HAL 限流节点，需手动关闭还原"
+      : "解除 HAL 温控降档，原值自动备份";
     var ct = (d.core && d.core !== "off") ? Number(d.core) : 0;
     var xp = [];
     if (bsp > 0) xp.push("电池 " + bsp + "℃");
     if (d.unlock === true) xp.push("阶梯已解锁");
     if (ct > 0) xp.push("CPU " + ct + "℃");
-    $("sumExtreme").textContent = xp.length ? xp.join(" · ") : "安全边界未动";
+    $("sumExtreme").textContent = xp.length ? xp.join(" · ") : "未开启";
     rngPush("coreT", ct > 0 ? ct : 45);
     $("coreOff").checked = !(ct > 0);
     $("coreT").disabled = !(ct > 0);
     $("cpuNow").textContent = ct > 0 ? "上报 " + ct + "℃" : "未伪装";
     $("coreHint").textContent = ct > 0
-      ? "系统读到的核心温度固定为 " + ct + "℃，调度按这个数决定降不降频。"
-        + "设得越低，系统越不当回事，但真实发热不会跟着降。"
-      : "未伪装：系统读到的是真实温度。";
+      ? "核心温区固定上报 " + ct + "℃，减少降频，真实发热不变"
+      : "保持真实核心温度";
     hzSup = hzParse(d.hz_list);
     var hi = (!d.hz || d.hz === "off") ? 0 : HZ_STEPS.indexOf(Number(d.hz));
     if (hi < 0) hi = 0;
@@ -734,8 +724,8 @@
     var ht = hzText(d);
     $("hzHint").textContent = ht;
     $("hzHint").style.display = ht ? "" : "none";
-    $("sumMain").textContent = "恒定 " + d.shell_temp + "℃" +
-      (hc > 0 ? " · 保护 " + hc + "℃" : " · 不看真实温度");
+    $("sumMain").textContent = "目标 " + d.shell_temp + "℃" +
+      (hc > 0 ? " · 保护 " + hc + "℃" : "");
   }
   function hzParse(v) {
     var a = [], p = String(v || "").split(/[ ,]+/), i, n;
@@ -860,13 +850,13 @@
       connect(function (cok) {
         if (!cok) {
           toast("执行通道未就绪", true);
-          fail("还没连上模块，打开诊断日志查看原因。");
+          fail("未连上模块");
           return;
         }
         detectMod(function (ok) {
           if (ok) { apply(arg, okMsg); return; }
           toast("模块路径未找到", true);
-          fail("没有找到 Quick Charge 的安装目录，可能是模块未启用或未安装。");
+          fail("未找到 Quick Charge 模块目录");
         });
       });
       return;
@@ -1083,14 +1073,6 @@
     bindFold("foldExtreme", "qc.fold.ext", false);
     bindFold("foldLog", "qc.fold.log", false);
   }
-  function openUrl(u) {
-    exec("am start -a android.intent.action.VIEW -d " + shQuote(u), function (r) {
-      if (r && r.code === 0) return;
-      var w = null;
-      try { w = window.open(u, "_blank"); } catch (e) {}
-      if (!w) { try { location.href = u; } catch (e2) {} }
-    });
-  }
   function bindTap(id, fn) {
     var el = $(id);
     if (el && el.addEventListener) el.addEventListener("click", fn);
@@ -1098,18 +1080,17 @@
   function boot() {
     initFolds();
     if (!bridgeName()) {
-      fail("当前环境没有网页控制接口。请在 KernelSU / APatch / MMRL 里打开本模块的 WebUI；" +
-           "如果是 Magisk，请用终端执行：su -c sh /data/adb/modules/quickcharge/action.sh");
+      fail("无 WebUI 控制接口，请在 KernelSU / APatch / MMRL 中打开；Magisk 请在终端运行：su -c sh /data/adb/modules/quickcharge/action.sh");
     } else {
       info("正在连接模块…");
       connect(function (cok) {
         if (!cok) {
-          fail("命令通道没能建立（三种调用方式都试过）。打开诊断日志看原因，或重启 WebUI 再试。");
+          fail("命令通道建立失败，请重启 WebUI 重试。");
           return;
         }
         detectMod(function (ok) {
           if (!ok) {
-            fail("命令通道正常，但没找到模块目录。请确认 Quick Charge 已安装并启用后点“重挂”。");
+            fail("未找到模块目录，请确认已启用后点「重挂」。");
             return;
           }
           load();
@@ -1154,7 +1135,7 @@
     $("battSpOff").addEventListener("change", function () {
       var el = this, off = el.checked;
       if (!off) {
-        ask("开启后系统与充电都按伪装温度判断电池，模块不会因为真实温度高而自动关掉它。\n\n真实高温下继续大电流充电会加速析锂，可能导致鼓包，且不在保修范围。确定开启？",
+        ask("开启后系统将按伪装温度控制充电。\n高温大电流会加速电池老化，确定开启？",
           function () {
             $("battSp").disabled = false;
             apply("batt " + $("battSp").value, "电池 NTC 伪装 -> " + $("battSp").value + "℃");
@@ -1168,7 +1149,7 @@
     $("unlockBtn").addEventListener("click", function () {
       var el = this;
       if (!hasCls(el, "on")) {
-        ask("解除阶梯限流会写 0 到 charge_control_limit / thermal_charging，\n充电不再按温度降档，机身会更热。\n\n原值会备份，但不会因为电池温度高而自动撤销——\n要还原得自己点关闭。\n\n确定开启？",
+        ask("将清零 HAL 温控限流节点，充电不再按温度降档，机身会更热。\n需手动关闭还原，确定开启？",
           function () { apply("unlock on", "阶梯限流已解除"); });
         return;
       }
@@ -1191,14 +1172,12 @@
         return;
       }
       el.checked = false;
-      ask("强制锁定会关闭系统的内容帧率匹配（视频会自动降到 24/30fps 省电）。\n开启后耗电与发热会上升，确认开启？", function () {
+      ask("强制锁定会关闭内容帧率自适应，耗电与发热会上升，确定开启？", function () {
         el.checked = true;
         hzHard = true;
         apply("hzguard on", "已开启强制锁定");
       });
     });
-    bindTap("joinQun", function () { openUrl(QUN_URL); });
-    bindTap("followAuthor", function () { openUrl(COOLAPK_URL); });
     var askM = $("ask");
     if (askM && askM.addEventListener) {
       askM.addEventListener("touchmove", function (e) {
@@ -1209,17 +1188,17 @@
       load(function (ok) { toast(ok ? "已刷新" : "刷新失败", !ok); });
     });
     bindTap("logClose", function () {
-      if (S && Number(S.level) === 0) { toast("日志已经是关闭的"); return; }
+      if (S && Number(S.level) === 0) { toast("日志已处于关闭状态"); return; }
       apply("level 0", "日志已关闭");
     });
     bindTap("logDetail", function () {
-      if (S && Number(S.level) >= 2) { toast("已经是详细日志"); return; }
-      apply("level 2", "日志 → 详细（已写入环境头）");
+      if (S && Number(S.level) >= 2) { toast("已处于详细日志"); return; }
+      apply("level 2", "已开启详细日志");
     });
     bindTap("rebuild", function () {
       var nm = S && S.mount_mode && S.mount_mode.indexOf("nomount") === 0;
-      toast(nm ? "正在重新生成并注入…" : "正在重挂…");
-      apply("rebuild", nm ? "已重新注入（无挂载）" : "已重新挂载");
+      toast(nm ? "正在重建注入…" : "正在重挂…");
+      apply("rebuild", nm ? "已重新注入" : "已重挂");
     });
     bindTap("restart", function () {
       apply("restart", "守护已重启");
